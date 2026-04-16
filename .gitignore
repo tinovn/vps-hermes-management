@@ -1,0 +1,29 @@
+# venvs
+.venv/
+venv/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+
+# secrets
+.env
+.env.local
+*.pem
+*.key
+
+# local tools
+.DS_Store
+*.swp
+*.swo
+
+# test / build artefacts
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# local notes
+/tmp/
+/scratch/

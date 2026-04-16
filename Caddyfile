@@ -1,0 +1,46 @@
+{
+    email admin@{$DOMAIN}
+    admin off
+}
+
+{$DOMAIN} {
+    {$CADDY_TLS}
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    # SSE streaming — disable buffering for /api/logs/stream
+    handle /api/logs/stream {
+        reverse_proxy 127.0.0.1:9997 {
+            flush_interval -1
+            transport http {
+                read_timeout 24h
+            }
+        }
+    }
+
+    # Management API owns /api/* + /login
+    handle /login {
+        reverse_proxy 127.0.0.1:9997
+    }
+    handle /api/* {
+        reverse_proxy 127.0.0.1:9997
+    }
+
+    # Hermes dashboard (root)
+    handle {
+        reverse_proxy 127.0.0.1:9119
+    }
+
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 50mb
+            roll_keep 5
+        }
+    }
+}

@@ -1,0 +1,13 @@
+{
+  "provider": "anthropic",
+  "display_name": "Anthropic Claude",
+  "env_var": "ANTHROPIC_API_KEY",
+  "base_url": "https://api.anthropic.com",
+  "test_endpoint": "/v1/models",
+  "models": [
+    "anthropic/claude-opus-4-6",
+    "anthropic/claude-sonnet-4-6",
+    "anthropic/claude-haiku-4-5"
+  ],
+  "default_model": "anthropic/claude-sonnet-4-6"
+}

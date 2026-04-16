@@ -1,0 +1,9 @@
+{
+  "provider": "minimax",
+  "display_name": "MiniMax",
+  "env_var": "MINIMAX_API_KEY",
+  "base_url": "https://api.minimax.io",
+  "test_endpoint": "/v1/models",
+  "models": ["minimax/m2", "minimax/abab-7-chat"],
+  "default_model": "minimax/m2"
+}

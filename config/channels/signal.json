@@ -1,0 +1,8 @@
+{
+  "channel": "signal",
+  "display_name": "Signal",
+  "env_vars": ["SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL", "SIGNAL_ALLOWED_USERS"],
+  "required": ["SIGNAL_ACCOUNT"],
+  "transport": "signal-cli bridge",
+  "setup_docs": "https://github.com/AsamK/signal-cli"
+}

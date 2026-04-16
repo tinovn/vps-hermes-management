@@ -1,0 +1,8 @@
+{
+  "channel": "email",
+  "display_name": "Email (SMTP+IMAP)",
+  "env_vars": ["EMAIL_SMTP_HOST", "EMAIL_SMTP_USER", "EMAIL_SMTP_PASS", "EMAIL_IMAP_HOST"],
+  "required": ["EMAIL_SMTP_HOST", "EMAIL_SMTP_USER", "EMAIL_SMTP_PASS"],
+  "transport": "smtp-out + imap-in",
+  "setup_docs": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging"
+}

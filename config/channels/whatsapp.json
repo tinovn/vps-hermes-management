@@ -1,0 +1,8 @@
+{
+  "channel": "whatsapp",
+  "display_name": "WhatsApp",
+  "env_vars": ["WHATSAPP_MODE", "WHATSAPP_ENABLED"],
+  "required": ["WHATSAPP_MODE"],
+  "transport": "bridge",
+  "setup_docs": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging"
+}

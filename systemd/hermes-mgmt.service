@@ -1,0 +1,23 @@
+[Unit]
+Description=Hermes VPS Management API (FastAPI)
+After=network-online.target
+Wants=network-online.target
+PartOf=hermes.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/hermes-mgmt
+EnvironmentFile=/opt/hermes/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=HERMES_INSTALL_DIR=/opt/hermes
+Environment=HERMES_TEMPLATES_DIR=/etc/hermes/config
+ExecStart=/opt/hermes-mgmt/.venv/bin/uvicorn hermes_mgmt.main:app --host 0.0.0.0 --port 9997 --workers 1
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

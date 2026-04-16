@@ -1,0 +1,12 @@
+{
+  "provider": "nous-portal",
+  "display_name": "Nous Portal",
+  "env_var": "NOUS_API_KEY",
+  "base_url": "https://portal.nousresearch.com/api",
+  "test_endpoint": "/v1/models",
+  "models": [
+    "nous-portal/hermes-4-405b",
+    "nous-portal/hermes-4-70b"
+  ],
+  "default_model": "nous-portal/hermes-4-70b"
+}

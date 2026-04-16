@@ -1,0 +1,9 @@
+{
+  "provider": "mimo",
+  "display_name": "Xiaomi MiMo",
+  "env_var": "MIMO_API_KEY",
+  "base_url": "https://platform.xiaomimimo.com",
+  "test_endpoint": "/v1/models",
+  "models": ["mimo/mimo-pro"],
+  "default_model": "mimo/mimo-pro"
+}

@@ -1,0 +1,9 @@
+{
+  "provider": "kimi",
+  "display_name": "Kimi / Moonshot",
+  "env_var": "KIMI_API_KEY",
+  "base_url": "https://api.moonshot.ai",
+  "test_endpoint": "/v1/models",
+  "models": ["kimi/kimi-k2", "kimi/moonshot-v1-128k"],
+  "default_model": "kimi/kimi-k2"
+}

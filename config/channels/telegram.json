@@ -1,0 +1,8 @@
+{
+  "channel": "telegram",
+  "display_name": "Telegram",
+  "env_vars": ["TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"],
+  "required": ["TELEGRAM_BOT_TOKEN"],
+  "transport": "long-poll",
+  "setup_docs": "https://core.telegram.org/bots/tutorial"
+}

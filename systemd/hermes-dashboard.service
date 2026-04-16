@@ -1,0 +1,23 @@
+[Unit]
+Description=Hermes Agent — Web Dashboard (FastAPI)
+Documentation=https://github.com/NousResearch/hermes-agent
+After=network-online.target
+Wants=network-online.target
+PartOf=hermes.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/hermes
+EnvironmentFile=/opt/hermes/.env
+Environment=HOME=/opt/hermes
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/local/bin/hermes dashboard --no-open --host 127.0.0.1 --port 9119
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

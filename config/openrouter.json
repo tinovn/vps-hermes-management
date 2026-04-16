@@ -1,0 +1,15 @@
+{
+  "provider": "openrouter",
+  "display_name": "OpenRouter",
+  "env_var": "OPENROUTER_API_KEY",
+  "base_url": "https://openrouter.ai/api",
+  "test_endpoint": "/v1/models",
+  "models": [
+    "openrouter/anthropic/claude-sonnet-4.6",
+    "openrouter/openai/gpt-5.2",
+    "openrouter/google/gemini-2.5-pro",
+    "openrouter/meta-llama/llama-4-maverick",
+    "openrouter/deepseek/deepseek-v4"
+  ],
+  "default_model": "openrouter/anthropic/claude-sonnet-4.6"
+}

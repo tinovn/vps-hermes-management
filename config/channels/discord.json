@@ -1,0 +1,8 @@
+{
+  "channel": "discord",
+  "display_name": "Discord",
+  "env_vars": ["DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"],
+  "required": ["DISCORD_BOT_TOKEN"],
+  "transport": "gateway",
+  "setup_docs": "https://discord.com/developers/docs/getting-started"
+}

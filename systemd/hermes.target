@@ -1,0 +1,7 @@
+[Unit]
+Description=Hermes Agent target (gateway + dashboard + management API)
+Wants=hermes-gateway.service hermes-dashboard.service hermes-mgmt.service
+After=network-online.target
+
+[Install]
+WantedBy=multi-user.target

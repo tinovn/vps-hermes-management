@@ -1,0 +1,8 @@
+{
+  "channel": "slack",
+  "display_name": "Slack",
+  "env_vars": ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
+  "required": ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
+  "transport": "socket-mode",
+  "setup_docs": "https://api.slack.com/apis/socket-mode"
+}
