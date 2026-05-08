@@ -416,29 +416,15 @@ cat > "${INSTALL_DIR}/Caddyfile" <<'CADDYFILE'
         -Server
     }
 
-    # SSE streaming — disable buffering for /api/logs/stream
-    handle /api/logs/stream {
-        reverse_proxy 127.0.0.1:9997 {
-            flush_interval -1
-            transport http {
-                read_timeout 24h
-            }
-        }
-    }
-
-    # Management API owns /api/* + /login
-    handle /login {
-        reverse_proxy 127.0.0.1:9997
-    }
-    handle /api/* {
-        reverse_proxy 127.0.0.1:9997
-    }
-
-    # Hermes dashboard (root) — bound to 127.0.0.1:9119 with strict Host check,
-    # rewrite Host so Hermes accepts proxied requests.
-    handle {
-        reverse_proxy 127.0.0.1:9119 {
-            header_up Host "localhost:9119"
+    # All paths → Hermes dashboard. Hermes owns /api/* (status, sessions, env,
+    # model, providers, logs, etc.); rewriting Host satisfies its strict
+    # Host header check. Management API stays on its own port (9997) and is
+    # NOT proxied — Hermes' /api/* would conflict with mgmt routes.
+    reverse_proxy 127.0.0.1:9119 {
+        header_up Host "localhost:9119"
+        flush_interval -1
+        transport http {
+            read_timeout 24h
         }
     }
 
@@ -604,7 +590,7 @@ log "    hermes-dashboard  : $(svc_status hermes-dashboard.service)"
 log "    fail2ban          : $(svc_status fail2ban.service)"
 log ""
 log "  Dashboard:      ${SCHEME}://${DOMAIN}/"
-log "  Management API: ${SCHEME}://${DOMAIN}/api  (or http://${DROPLET_IP}:${MGMT_API_PORT})"
+log "  Management API: http://${DROPLET_IP}:${MGMT_API_PORT}  (port-only, not proxied via Caddy)"
 log "  TLS mode:       $([[ "$DNS_READY" == "true" ]] && echo "Let's Encrypt" || echo "self-signed (DNS not ready)")"
 log ""
 log "  MGMT_API_KEY:   ${MGMT_API_KEY}"
