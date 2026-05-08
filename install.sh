@@ -72,6 +72,17 @@ if [[ "$(id -u)" != "0" ]]; then
 fi
 log "OS OK: ${PRETTY_NAME}"
 
+# ---- 1b. Pre-flight: disk + RAM ------------------------------------------
+DISK_AVAIL_GB=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+MEM_TOTAL_MB=$(awk '/^MemTotal:/ {print int($2/1024)}' /proc/meminfo)
+log "Pre-flight: disk=${DISK_AVAIL_GB}GB free, RAM=${MEM_TOTAL_MB}MB total"
+if [[ "${DISK_AVAIL_GB:-0}" -lt 6 ]]; then
+  die "Insufficient disk: need >=6GB free on /, have ${DISK_AVAIL_GB}GB"
+fi
+if [[ "${MEM_TOTAL_MB:-0}" -lt 900 ]]; then
+  die "Insufficient RAM: need >=1GB, have ${MEM_TOTAL_MB}MB"
+fi
+
 # ---- 2. Apt lock handling -------------------------------------------------
 step "2. Apt lock + cloud-init wait"
 
@@ -79,11 +90,26 @@ systemctl stop unattended-upgrades 2>/dev/null || true
 systemctl disable unattended-upgrades 2>/dev/null || true
 systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 systemctl disable apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+killall -9 unattended-upgr apt apt-get dpkg 2>/dev/null || true
+sleep 3
+
+rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
+rm -f /var/lib/dpkg/updates/* 2>/dev/null || true
+dpkg --force-confdef --force-confold --configure -a 2>/dev/null || true
+
+is_apt_locked() {
+  if command -v lsof &>/dev/null; then
+    lsof /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null | grep -q .
+    return $?
+  fi
+  fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock 2>/dev/null
+}
 
 wait_for_apt() {
   local max=180 waited=0
   while [[ $waited -lt $max ]]; do
-    if ! fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock 2>/dev/null; then
+    if ! is_apt_locked; then
       return 0
     fi
     log "apt lock held, waiting 5s (${waited}s/${max}s)..."
@@ -102,9 +128,14 @@ apt_retry() {
     wait_for_apt
     if "$@"; then return 0; fi
     i=$((i + 1))
-    log "apt retry ${i}/${retries}..."
+    log "apt retry ${i}/${retries}: cleaning lock + reconfiguring dpkg..."
+    killall -9 apt apt-get dpkg 2>/dev/null || true
+    rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
+    rm -f /var/lib/dpkg/updates/* 2>/dev/null || true
+    dpkg --force-confdef --force-confold --configure -a 2>/dev/null || true
     sleep 5
   done
+  log "FATAL: apt command failed after ${retries} attempts: $*"
   return 1
 }
 
@@ -134,16 +165,37 @@ fi
 # ---- 4. DNS pre-check (non-fatal) -----------------------------------------
 step "4. DNS pre-check"
 DNS_READY=false
-for i in 1 2 3 4 5 6; do
-  RESOLVED=$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk '{print $1; exit}')
-  if [[ "$RESOLVED" == "$DROPLET_IP" ]]; then
-    DNS_READY=true
-    log "DNS OK: ${DOMAIN} -> ${DROPLET_IP}"
-    break
+
+# Resolve via system stub (getent) and DoH (1.1.1.1) — bypass stale VPS cache
+resolve_domain() {
+  local d="$1" r=""
+  r=$(getent ahostsv4 "$d" 2>/dev/null | awk '{print $1; exit}')
+  if [[ -z "$r" ]]; then
+    r=$(curl -sf --max-time 5 "https://1.1.1.1/dns-query?name=${d}&type=A" \
+        -H "accept: application/dns-json" 2>/dev/null \
+      | grep -oE '"data":[ ]*"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"' \
+      | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+') || true
   fi
-  log "DNS wait ${i}/6: ${DOMAIN} -> ${RESOLVED:-?} (need ${DROPLET_IP})"
-  sleep 5
-done
+  echo "$r"
+}
+
+# Skip DNS check entirely for sslip.io fallback (it always resolves correctly)
+if [[ "$DOMAIN" == *.sslip.io ]]; then
+  DNS_READY=true
+  log "DNS skip: sslip.io fallback (always resolves)"
+else
+  for i in 1 2 3 4 5 6; do
+    RESOLVED=$(resolve_domain "$DOMAIN")
+    if [[ "$RESOLVED" == "$DROPLET_IP" ]]; then
+      DNS_READY=true
+      log "DNS OK: ${DOMAIN} -> ${DROPLET_IP}"
+      break
+    fi
+    log "DNS wait ${i}/6: ${DOMAIN} -> ${RESOLVED:-?} (need ${DROPLET_IP})"
+    sleep 5
+  done
+fi
+
 if [[ "$DNS_READY" == "false" ]]; then
   log "WARN: DNS not ready; Caddy will use self-signed TLS"
 fi
@@ -178,15 +230,20 @@ if ! command -v caddy &>/dev/null; then
 fi
 log "Caddy: $(caddy version | head -1)"
 
-# ---- 8. UFW ---------------------------------------------------------------
+# ---- 8. UFW (idempotent — preserves user-added rules) ---------------------
 step "8. Configure UFW"
-ufw --force reset
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow 80/tcp  comment 'http'
-ufw allow 443/tcp comment 'https'
-ufw allow "${MGMT_API_PORT}/tcp" comment 'hermes-mgmt'
-ufw limit ssh/tcp
+ufw_rule_exists() { ufw status 2>/dev/null | grep -qE "^${1}\b"; }
+
+# Set defaults only if firewall not yet active (preserve operator changes)
+if ! ufw status 2>/dev/null | grep -q "Status: active"; then
+  ufw default deny incoming
+  ufw default allow outgoing
+fi
+
+ufw_rule_exists "80/tcp"                  || ufw allow 80/tcp  comment 'http'
+ufw_rule_exists "443/tcp"                 || ufw allow 443/tcp comment 'https'
+ufw_rule_exists "${MGMT_API_PORT}/tcp"    || ufw allow "${MGMT_API_PORT}/tcp" comment 'hermes-mgmt'
+ufw status 2>/dev/null | grep -q "22/tcp.*LIMIT" || ufw limit ssh/tcp
 ufw --force enable
 
 # ---- 9. Install layout ----------------------------------------------------
@@ -499,19 +556,32 @@ apt-get -qqy autoremove
 apt-get -qqy autoclean
 
 # ---- 19. Print success banner --------------------------------------------
-if [[ "$DNS_READY" == "true" ]]; then
-  SCHEME="https"
-else
-  SCHEME="https"  # Caddy self-signed still serves https (browser warning)
-fi
+SCHEME="https"  # Caddy serves https either via Let's Encrypt or self-signed
+
+svc_status() {
+  local svc="$1"
+  if systemctl is-active --quiet "$svc"; then
+    echo "OK"
+  else
+    echo "FAIL ($(systemctl is-active "$svc" 2>&1))"
+  fi
+}
 
 log ""
 log "============================================================"
 log "  hermes-vps install complete"
 log "============================================================"
 log ""
+log "  Service status:"
+log "    caddy             : $(svc_status caddy.service)"
+log "    hermes-mgmt       : $(svc_status hermes-mgmt.service)"
+log "    hermes-gateway    : $(svc_status hermes-gateway.service)"
+log "    hermes-dashboard  : $(svc_status hermes-dashboard.service)"
+log "    fail2ban          : $(svc_status fail2ban.service)"
+log ""
 log "  Dashboard:      ${SCHEME}://${DOMAIN}/"
 log "  Management API: ${SCHEME}://${DOMAIN}/api  (or http://${DROPLET_IP}:${MGMT_API_PORT})"
+log "  TLS mode:       $([[ "$DNS_READY" == "true" ]] && echo "Let's Encrypt" || echo "self-signed (DNS not ready)")"
 log ""
 log "  MGMT_API_KEY:   ${MGMT_API_KEY}"
 log "  GATEWAY_TOKEN:  ${GATEWAY_TOKEN}"
@@ -522,5 +592,9 @@ log "    hermes model                     # pick provider + model"
 log "    hermes config show               # verify config"
 log "    systemctl status hermes-gateway  # inspect services"
 log "    journalctl -u hermes-gateway -f  # follow logs"
+log ""
+log "  Quick health check:"
+log "    curl -H 'Authorization: Bearer ${MGMT_API_KEY}' \\"
+log "         http://127.0.0.1:${MGMT_API_PORT}/api/status"
 log ""
 log "============================================================"

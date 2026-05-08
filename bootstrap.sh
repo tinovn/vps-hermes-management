@@ -61,11 +61,13 @@ cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 Description=hermes-vps one-shot installer (runs once after reboot)
 After=network-online.target
 Wants=network-online.target
+ConditionPathExists=${INSTALL_SCRIPT}
 
 [Service]
 Type=oneshot
 RemainAfterExit=no
-ExecStart=/bin/bash -c '${INSTALL_SCRIPT} \$(cat ${INSTALL_ARGS}) && systemctl disable ${SERVICE_NAME}.service && rm -f /etc/systemd/system/${SERVICE_NAME}.service ${INSTALL_SCRIPT} ${INSTALL_ARGS} && systemctl daemon-reload'
+Environment=DEBIAN_FRONTEND=noninteractive
+ExecStart=/bin/bash -c '${INSTALL_SCRIPT} \$(cat ${INSTALL_ARGS}) >> ${LOG_FILE} 2>&1; rc=\$?; systemctl disable ${SERVICE_NAME}.service; rm -f /etc/systemd/system/${SERVICE_NAME}.service ${INSTALL_SCRIPT} ${INSTALL_ARGS}; systemctl daemon-reload; exit \$rc'
 StandardOutput=journal
 StandardError=journal
 TimeoutStartSec=30min
