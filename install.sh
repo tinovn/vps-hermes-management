@@ -166,15 +166,17 @@ fi
 step "4. DNS pre-check"
 DNS_READY=false
 
-# Resolve via system stub (getent) and DoH (1.1.1.1) — bypass stale VPS cache
+# Resolve via DoH first (1.1.1.1) — bypass /etc/hosts which often maps the VPS
+# hostname to 127.0.1.1 on Ubuntu, then fall back to getent for non-public domains.
 resolve_domain() {
   local d="$1" r=""
-  r=$(getent ahostsv4 "$d" 2>/dev/null | awk '{print $1; exit}')
+  r=$(curl -sf --max-time 5 "https://1.1.1.1/dns-query?name=${d}&type=A" \
+      -H "accept: application/dns-json" 2>/dev/null \
+    | grep -oE '"data":[ ]*"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"' \
+    | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+') || true
   if [[ -z "$r" ]]; then
-    r=$(curl -sf --max-time 5 "https://1.1.1.1/dns-query?name=${d}&type=A" \
-        -H "accept: application/dns-json" 2>/dev/null \
-      | grep -oE '"data":[ ]*"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"' \
-      | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+') || true
+    r=$(getent ahostsv4 "$d" 2>/dev/null \
+      | awk '$1 !~ /^127\./ && $1 !~ /^::/ {print $1; exit}')
   fi
   echo "$r"
 }
@@ -217,6 +219,14 @@ if ! command -v uv &>/dev/null; then
 fi
 uv --version
 uv python install "$PYTHON_PIN"
+
+# ---- 6b. Install Node.js 22 (required for Hermes web dashboard build) -----
+step "6b. Install Node.js 22"
+if ! command -v node &>/dev/null || [[ "$(node -v 2>/dev/null)" != v22* ]]; then
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  apt_retry apt-get -qqy install nodejs
+fi
+log "Node: $(node -v) / npm: $(npm -v)"
 
 # ---- 7. Install Caddy -----------------------------------------------------
 step "7. Install Caddy"
@@ -272,6 +282,17 @@ if [[ "$SKIP_HERMES" != "true" ]]; then
 
   ln -sf "${HERMES_SRC_DIR}/.venv/bin/hermes" /usr/local/bin/hermes
   log "Hermes: $(/usr/local/bin/hermes version 2>/dev/null | head -1 || echo 'installed')"
+
+  # Build web dashboard ahead of time — Hermes auto-build during systemd start
+  # fails (no TTY, kills child npm processes after 7s).
+  if [[ -d "${HERMES_SRC_DIR}/web" && ! -d "${HERMES_SRC_DIR}/hermes_cli/web_dist" ]]; then
+    log "Building Hermes web dashboard (npm install + build)..."
+    pushd "${HERMES_SRC_DIR}/web" >/dev/null
+    npm install --no-audit --no-fund --loglevel=error
+    npm run build
+    popd >/dev/null
+    log "Web dashboard built"
+  fi
 else
   log "Skipping Hermes install (--skip-hermes)"
 fi
@@ -413,9 +434,12 @@ cat > "${INSTALL_DIR}/Caddyfile" <<'CADDYFILE'
         reverse_proxy 127.0.0.1:9997
     }
 
-    # Hermes dashboard (root)
+    # Hermes dashboard (root) — bound to 127.0.0.1:9119 with strict Host check,
+    # rewrite Host so Hermes accepts proxied requests.
     handle {
-        reverse_proxy 127.0.0.1:9119
+        reverse_proxy 127.0.0.1:9119 {
+            header_up Host "localhost:9119"
+        }
     }
 
     log {
