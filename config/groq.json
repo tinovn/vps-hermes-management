@@ -1,0 +1,14 @@
+{
+  "provider": "groq",
+  "display_name": "Groq",
+  "env_var": "GROQ_API_KEY",
+  "base_url": "https://api.groq.com/openai",
+  "test_endpoint": "/v1/models",
+  "models": [
+    "groq/llama-4-maverick-17b",
+    "groq/llama-4-scout-17b",
+    "groq/qwen3-72b",
+    "groq/kimi-k2"
+  ],
+  "default_model": "groq/llama-4-maverick-17b"
+}

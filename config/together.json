@@ -1,0 +1,14 @@
+{
+  "provider": "together",
+  "display_name": "Together AI",
+  "env_var": "TOGETHER_API_KEY",
+  "base_url": "https://api.together.xyz",
+  "test_endpoint": "/v1/models",
+  "models": [
+    "together/meta-llama/Llama-4-Maverick-17B",
+    "together/meta-llama/Llama-4-Scout-17B",
+    "together/Qwen/Qwen3-72B",
+    "together/deepseek-ai/DeepSeek-V4"
+  ],
+  "default_model": "together/meta-llama/Llama-4-Maverick-17B"
+}

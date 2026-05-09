@@ -333,6 +333,7 @@ step "12. Generate tokens + .env"
 GATEWAY_TOKEN=$(openssl rand -hex 32)
 MGMT_API_KEY="${MGMT_API_KEY_ARG:-$(openssl rand -hex 32)}"
 SESSION_SECRET=$(openssl rand -hex 32)
+AUTH_TOKEN=$(openssl rand -hex 24)  # Caddy dashboard gate token
 
 if [[ "$DNS_READY" == "true" ]]; then
   CADDY_TLS_VALUE=""
@@ -360,6 +361,7 @@ HERMES_MGMT_PORT=${MGMT_API_PORT}
 HERMES_GATEWAY_TOKEN=${GATEWAY_TOKEN}
 HERMES_MGMT_API_KEY=${MGMT_API_KEY}
 HERMES_MGMT_SESSION_SECRET=${SESSION_SECRET}
+HERMES_AUTH_TOKEN=${AUTH_TOKEN}
 
 # --- Provider API keys (fill what you use) ---
 # OPENAI_API_KEY=
@@ -379,14 +381,23 @@ EOF
   log "Wrote ${INSTALL_DIR}/.env"
 else
   log "Preserving existing .env"
-  # Rotate tokens only if missing
+  # Append tokens only if missing (do not rotate existing values)
   grep -q '^HERMES_MGMT_API_KEY=' "${INSTALL_DIR}/.env" || \
     echo "HERMES_MGMT_API_KEY=${MGMT_API_KEY}" >> "${INSTALL_DIR}/.env"
+  grep -q '^HERMES_AUTH_TOKEN=' "${INSTALL_DIR}/.env" || \
+    echo "HERMES_AUTH_TOKEN=${AUTH_TOKEN}" >> "${INSTALL_DIR}/.env"
+  # Re-read AUTH_TOKEN from file in case we preserved an earlier value
+  AUTH_TOKEN=$(grep '^HERMES_AUTH_TOKEN=' "${INSTALL_DIR}/.env" | cut -d= -f2)
 fi
 
 # ---- 13. Seed config templates -------------------------------------------
 step "13. Seed provider/channel templates"
-for tpl in anthropic openai nous-portal openrouter huggingface; do
+# Provider templates — keep in sync with config/*.json in this repo + with the
+# _PROVIDER_BASE_URLS map in management-api/hermes_mgmt/routes/config_routes.py
+for tpl in anthropic openai google xai \
+           deepseek groq mistral together \
+           nous-portal openrouter huggingface \
+           kimi mimo minimax zai; do
   curl -fsSL "${MGMT_REPO_RAW}/config/${tpl}.json" \
     -o "${TEMPLATES_DIR}/${tpl}.json" 2>/dev/null \
     || log "WARN: template ${tpl}.json not fetched (may not exist yet)"
@@ -416,16 +427,37 @@ cat > "${INSTALL_DIR}/Caddyfile" <<'CADDYFILE'
         -Server
     }
 
-    # All paths → Hermes dashboard. Hermes owns /api/* (status, sessions, env,
-    # model, providers, logs, etc.); rewriting Host satisfies its strict
-    # Host header check. Management API stays on its own port (9997) and is
-    # NOT proxied — Hermes' /api/* would conflict with mgmt routes.
-    reverse_proxy 127.0.0.1:9119 {
-        header_up Host "localhost:9119"
-        flush_interval -1
-        transport http {
-            read_timeout 24h
+    # ---- Dashboard auth gate ----
+    # First-visit URL:  https://<domain>/?token=$HERMES_AUTH_TOKEN
+    #   -> sets persistent cookie, strips token from history (302 to /)
+    # Subsequent visits: cookie hermes_auth=<token> grants access (30 days)
+    # Without either:    403 with hint
+    @auth_via_query {
+        query token={$HERMES_AUTH_TOKEN}
+    }
+    handle @auth_via_query {
+        header Set-Cookie "hermes_auth={$HERMES_AUTH_TOKEN}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax"
+        redir https://{host}/ 302
+    }
+
+    @auth_via_cookie {
+        header Cookie *hermes_auth={$HERMES_AUTH_TOKEN}*
+    }
+    handle @auth_via_cookie {
+        # Hermes owns /api/* (status, sessions, env, model, providers, logs).
+        # Rewrite Host so its strict Host header check passes. Management API
+        # stays on its own port (9997) — its /api/* would conflict.
+        reverse_proxy 127.0.0.1:9119 {
+            header_up Host "localhost:9119"
+            flush_interval -1
+            transport http {
+                read_timeout 24h
+            }
         }
+    }
+
+    handle {
+        respond "Forbidden. Append ?token=<HERMES_AUTH_TOKEN> to authenticate." 403
     }
 
     log {
@@ -589,12 +621,15 @@ log "    hermes-gateway    : $(svc_status hermes-gateway.service)"
 log "    hermes-dashboard  : $(svc_status hermes-dashboard.service)"
 log "    fail2ban          : $(svc_status fail2ban.service)"
 log ""
-log "  Dashboard:      ${SCHEME}://${DOMAIN}/"
+log "  Dashboard URL (first visit, sets a 30d cookie then strips token):"
+log "    ${SCHEME}://${DOMAIN}/?token=${AUTH_TOKEN}"
+log ""
 log "  Management API: http://${DROPLET_IP}:${MGMT_API_PORT}  (port-only, not proxied via Caddy)"
 log "  TLS mode:       $([[ "$DNS_READY" == "true" ]] && echo "Let's Encrypt" || echo "self-signed (DNS not ready)")"
 log ""
-log "  MGMT_API_KEY:   ${MGMT_API_KEY}"
-log "  GATEWAY_TOKEN:  ${GATEWAY_TOKEN}"
+log "  AUTH_TOKEN:     ${AUTH_TOKEN}        (dashboard gate)"
+log "  MGMT_API_KEY:   ${MGMT_API_KEY}        (mgmt API bearer)"
+log "  GATEWAY_TOKEN:  ${GATEWAY_TOKEN}        (hermes gateway)"
 log ""
 log "  Next steps:"
 log "    hermes gateway setup             # configure messaging channels"

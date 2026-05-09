@@ -1,0 +1,14 @@
+{
+  "provider": "mistral",
+  "display_name": "Mistral AI",
+  "env_var": "MISTRAL_API_KEY",
+  "base_url": "https://api.mistral.ai",
+  "test_endpoint": "/v1/models",
+  "models": [
+    "mistral/mistral-large-2",
+    "mistral/mistral-medium-3",
+    "mistral/mistral-small-3",
+    "mistral/codestral-2"
+  ],
+  "default_model": "mistral/mistral-large-2"
+}

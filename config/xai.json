@@ -1,0 +1,13 @@
+{
+  "provider": "xai",
+  "display_name": "xAI Grok",
+  "env_var": "XAI_API_KEY",
+  "base_url": "https://api.x.ai",
+  "test_endpoint": "/v1/models",
+  "models": [
+    "xai/grok-5",
+    "xai/grok-4-fast",
+    "xai/grok-code-fast-1"
+  ],
+  "default_model": "xai/grok-5"
+}
