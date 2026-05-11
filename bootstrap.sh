@@ -4,15 +4,24 @@
 #
 # Usage (from local shell):
 #   ssh root@vps "curl -fsSL https://raw.githubusercontent.com/tinovn/vps-hermes-management/main/bootstrap.sh | \
-#     bash -s -- --mgmt-key <KEY> [--domain <FQDN>]"
+#     bash -s -- [--mgmt-key <KEY>] [--gateway-token <KEY>] [--auth-token <KEY>] [--domain <FQDN>]"
+#
+# Recognized flags (any pre-seeded value lands in /opt/hermes/.env so install.sh
+# never rotates it):
+#   --mgmt-key       -> HERMES_MGMT_API_KEY   (mgmt API bearer)
+#   --gateway-token  -> HERMES_GATEWAY_TOKEN  (hermes gateway)
+#   --auth-token     -> HERMES_AUTH_TOKEN     (Caddy dashboard gate)
+#   --domain         -> DOMAIN                (Caddy site address)
+# Unknown flags are passed through to install.sh unchanged.
 #
 # Flow:
 #   1. cloud-init status --wait
-#   2. Download install.sh -> /opt/hermes/hermes-install.sh
-#   3. Save args to /opt/hermes/hermes-install.args
-#   4. Create systemd one-shot service, enable
-#   5. Reboot — install.sh runs after boot
-#   6. On success, service self-disables + cleans up
+#   2. Pre-seed /opt/hermes/.env with operator-supplied tokens
+#   3. Download install.sh -> /opt/hermes/hermes-install.sh
+#   4. Save args to /opt/hermes/hermes-install.args
+#   5. Create systemd one-shot service, enable
+#   6. Reboot — install.sh runs after boot, reads tokens from .env
+#   7. On success, service self-disables + cleans up
 #
 # Tail progress: journalctl -u hermes-install -f
 #             or tail -f /var/log/hermes-install.log
@@ -24,6 +33,7 @@ readonly REPO_RAW="https://raw.githubusercontent.com/tinovn/vps-hermes-managemen
 readonly BOOT_DIR="/opt/hermes"
 readonly INSTALL_SCRIPT="${BOOT_DIR}/hermes-install.sh"
 readonly INSTALL_ARGS="${BOOT_DIR}/hermes-install.args"
+readonly ENV_FILE="${BOOT_DIR}/.env"
 readonly LOG_FILE="/var/log/hermes-install.log"
 readonly SERVICE_NAME="hermes-install"
 
@@ -33,6 +43,39 @@ echo "$*" > "$INSTALL_ARGS"
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] bootstrap: $*" | tee -a "$LOG_FILE" >&2; }
 
 log "=== hermes-vps bootstrap starting ==="
+
+# ---- 0. Pre-seed .env with operator-supplied tokens ----
+# Bootstrap is the initial-provisioning entry point (Hostbill / cloud-init / SSH
+# one-shot). It OVERWRITES whatever was in .env so the operator's flags always
+# win on first boot. install.sh then reads these values back without rotating.
+write_env_key() {
+  local key="$1" value="$2"
+  [[ -z "$value" ]] && return 0
+  touch "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+  if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+    # Use a delimiter that cannot appear in our hex tokens / FQDNs.
+    sed -i.bak "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+    rm -f "${ENV_FILE}.bak"
+    log "  ${key}: overwritten in .env"
+  else
+    echo "${key}=${value}" >> "$ENV_FILE"
+    log "  ${key}: appended to .env"
+  fi
+}
+
+# Parse known flags (mirrors install.sh). Unknown flags pass through unchanged
+# in $INSTALL_ARGS for install.sh to handle.
+prev=""
+for arg in "$@"; do
+  case "$prev" in
+    --mgmt-key)      write_env_key HERMES_MGMT_API_KEY  "$arg" ;;
+    --gateway-token) write_env_key HERMES_GATEWAY_TOKEN "$arg" ;;
+    --auth-token)    write_env_key HERMES_AUTH_TOKEN    "$arg" ;;
+    --domain)        write_env_key DOMAIN               "$arg" ;;
+  esac
+  prev="$arg"
+done
 
 # ---- 1. Wait for cloud-init ----
 if command -v cloud-init &>/dev/null; then

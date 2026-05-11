@@ -329,11 +329,30 @@ VIRTUAL_ENV="${MGMT_DIR}/.venv" uv pip install --python "${MGMT_DIR}/.venv/bin/p
   -e "${MGMT_DIR}"
 
 # ---- 12. Generate tokens + .env ------------------------------------------
+# Token precedence (highest -> lowest):
+#   1. Existing value in ${INSTALL_DIR}/.env (pre-seeded by bootstrap.sh /
+#      provisioning system / re-run installer). Never rotated.
+#   2. --mgmt-key CLI flag (HOSTBILL / orchestrator)
+#   3. Freshly generated via `openssl rand`
 step "12. Generate tokens + .env"
-GATEWAY_TOKEN=$(openssl rand -hex 32)
-MGMT_API_KEY="${MGMT_API_KEY_ARG:-$(openssl rand -hex 32)}"
-SESSION_SECRET=$(openssl rand -hex 32)
-AUTH_TOKEN=$(openssl rand -hex 24)  # Caddy dashboard gate token
+
+# Read existing value for a given key from .env (empty string if missing/file absent).
+read_env_value() {
+  local key="$1" file="${INSTALL_DIR}/.env"
+  [[ -f "$file" ]] || { echo ""; return; }
+  awk -F= -v k="$key" '$1 == k { sub("^[^=]*=", ""); print; exit }' "$file"
+}
+
+# Generate a fresh token only if needed; never overwrite an existing value.
+EXISTING_GATEWAY_TOKEN=$(read_env_value HERMES_GATEWAY_TOKEN)
+EXISTING_MGMT_API_KEY=$(read_env_value HERMES_MGMT_API_KEY)
+EXISTING_SESSION_SECRET=$(read_env_value HERMES_MGMT_SESSION_SECRET)
+EXISTING_AUTH_TOKEN=$(read_env_value HERMES_AUTH_TOKEN)
+
+GATEWAY_TOKEN="${EXISTING_GATEWAY_TOKEN:-$(openssl rand -hex 32)}"
+MGMT_API_KEY="${EXISTING_MGMT_API_KEY:-${MGMT_API_KEY_ARG:-$(openssl rand -hex 32)}}"
+SESSION_SECRET="${EXISTING_SESSION_SECRET:-$(openssl rand -hex 32)}"
+AUTH_TOKEN="${EXISTING_AUTH_TOKEN:-$(openssl rand -hex 24)}"
 
 if [[ "$DNS_READY" == "true" ]]; then
   CADDY_TLS_VALUE=""
@@ -378,16 +397,18 @@ HERMES_AUTH_TOKEN=${AUTH_TOKEN}
 # SIGNAL_ACCOUNT=
 EOF
   chmod 600 "${INSTALL_DIR}/.env"
-  log "Wrote ${INSTALL_DIR}/.env"
+  log "Wrote ${INSTALL_DIR}/.env (fresh)"
 else
-  log "Preserving existing .env"
-  # Append tokens only if missing (do not rotate existing values)
-  grep -q '^HERMES_MGMT_API_KEY=' "${INSTALL_DIR}/.env" || \
-    echo "HERMES_MGMT_API_KEY=${MGMT_API_KEY}" >> "${INSTALL_DIR}/.env"
-  grep -q '^HERMES_AUTH_TOKEN=' "${INSTALL_DIR}/.env" || \
-    echo "HERMES_AUTH_TOKEN=${AUTH_TOKEN}" >> "${INSTALL_DIR}/.env"
-  # Re-read AUTH_TOKEN from file in case we preserved an earlier value
-  AUTH_TOKEN=$(grep '^HERMES_AUTH_TOKEN=' "${INSTALL_DIR}/.env" | cut -d= -f2)
+  log "Preserving existing ${INSTALL_DIR}/.env"
+  # Append any auth keys still missing (preserve every pre-seeded value).
+  [[ -n "$EXISTING_GATEWAY_TOKEN" ]]   || echo "HERMES_GATEWAY_TOKEN=${GATEWAY_TOKEN}"           >> "${INSTALL_DIR}/.env"
+  [[ -n "$EXISTING_MGMT_API_KEY" ]]    || echo "HERMES_MGMT_API_KEY=${MGMT_API_KEY}"             >> "${INSTALL_DIR}/.env"
+  [[ -n "$EXISTING_SESSION_SECRET" ]]  || echo "HERMES_MGMT_SESSION_SECRET=${SESSION_SECRET}"    >> "${INSTALL_DIR}/.env"
+  [[ -n "$EXISTING_AUTH_TOKEN" ]]      || echo "HERMES_AUTH_TOKEN=${AUTH_TOKEN}"                 >> "${INSTALL_DIR}/.env"
+  log "  GATEWAY_TOKEN: $([[ -n "$EXISTING_GATEWAY_TOKEN"  ]] && echo "preserved" || echo "appended")"
+  log "  MGMT_API_KEY : $([[ -n "$EXISTING_MGMT_API_KEY"   ]] && echo "preserved" || echo "appended")"
+  log "  SESSION_SECRET: $([[ -n "$EXISTING_SESSION_SECRET" ]] && echo "preserved" || echo "appended")"
+  log "  AUTH_TOKEN   : $([[ -n "$EXISTING_AUTH_TOKEN"     ]] && echo "preserved" || echo "appended")"
 fi
 
 # ---- 13. Seed config templates -------------------------------------------
