@@ -142,13 +142,30 @@ apt_retry() {
 wait_for_apt
 
 # ---- 3. Detect domain -----------------------------------------------------
+# Helper: read a key from /opt/hermes/.env (empty if missing/file absent).
+# Defined early because domain + several tokens read from the same file.
+read_env_value() {
+  local key="$1" file="${INSTALL_DIR}/.env"
+  [[ -f "$file" ]] || { echo ""; return; }
+  awk -F= -v k="$key" '$1 == k { sub("^[^=]*=", ""); print; exit }' "$file"
+}
+
 step "3. Detect domain"
 DROPLET_IP=$(hostname -I | awk '{print $1}')
 if [[ -z "$DROPLET_IP" ]]; then
   DROPLET_IP=$(curl -sf --max-time 5 https://api.ipify.org 2>/dev/null || echo "127.0.0.1")
 fi
 
-if [[ -n "$DOMAIN_ARG" ]]; then
+# Domain precedence (highest -> lowest):
+#   1. Existing DOMAIN= in /opt/hermes/.env (pre-seeded by bootstrap.sh)
+#   2. --domain CLI flag
+#   3. hostname -f (when it's a real FQDN)
+#   4. <ip>.sslip.io fallback
+EXISTING_DOMAIN=$(read_env_value DOMAIN)
+if [[ -n "$EXISTING_DOMAIN" ]]; then
+  DOMAIN="$EXISTING_DOMAIN"
+  log "Domain (from .env): ${DOMAIN}"
+elif [[ -n "$DOMAIN_ARG" ]]; then
   DOMAIN="$DOMAIN_ARG"
   log "Domain (from flag): ${DOMAIN}"
 else
@@ -334,14 +351,8 @@ VIRTUAL_ENV="${MGMT_DIR}/.venv" uv pip install --python "${MGMT_DIR}/.venv/bin/p
 #      provisioning system / re-run installer). Never rotated.
 #   2. --mgmt-key CLI flag (HOSTBILL / orchestrator)
 #   3. Freshly generated via `openssl rand`
+# read_env_value() is defined earlier (step 3) so DOMAIN lookup can share it.
 step "12. Generate tokens + .env"
-
-# Read existing value for a given key from .env (empty string if missing/file absent).
-read_env_value() {
-  local key="$1" file="${INSTALL_DIR}/.env"
-  [[ -f "$file" ]] || { echo ""; return; }
-  awk -F= -v k="$key" '$1 == k { sub("^[^=]*=", ""); print; exit }' "$file"
-}
 
 # Generate a fresh token only if needed; never overwrite an existing value.
 EXISTING_GATEWAY_TOKEN=$(read_env_value HERMES_GATEWAY_TOKEN)
