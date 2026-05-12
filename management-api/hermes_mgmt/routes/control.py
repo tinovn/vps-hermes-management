@@ -22,6 +22,33 @@ _VENV_UV = "/opt/hermes/hermes-agent/.venv/bin/uv"
 _HERMES_AGENT_DIR = "/opt/hermes/hermes-agent"
 _HERMES_EXTRAS = "[web,messaging,cron,voice,mcp,honcho]"
 
+_MGMT_DIR = "/opt/hermes-mgmt"
+_MGMT_VENV_UV = "/opt/hermes-mgmt/.venv/bin/uv"
+_MGMT_REPO_RAW = "https://raw.githubusercontent.com/tinovn/vps-hermes-management/main"
+_MGMT_FILES = (
+    "pyproject.toml",
+    "hermes_mgmt/__init__.py",
+    "hermes_mgmt/main.py",
+    "hermes_mgmt/config.py",
+    "hermes_mgmt/auth.py",
+    "hermes_mgmt/deps.py",
+    "hermes_mgmt/models.py",
+    "hermes_mgmt/env_file.py",
+    "hermes_mgmt/systemd_ctl.py",
+    "hermes_mgmt/cli_runner.py",
+    "hermes_mgmt/hermes_fs.py",
+    "hermes_mgmt/routes/__init__.py",
+    "hermes_mgmt/routes/status.py",
+    "hermes_mgmt/routes/control.py",
+    "hermes_mgmt/routes/config_routes.py",
+    "hermes_mgmt/routes/channels.py",
+    "hermes_mgmt/routes/cron_routes.py",
+    "hermes_mgmt/routes/logs.py",
+    "hermes_mgmt/routes/auth_routes.py",
+    "hermes_mgmt/routes/env_routes.py",
+    "hermes_mgmt/routes/cli_routes.py",
+)
+
 
 @router.post("/api/restart", response_model=ApiResponse)
 async def restart_hermes(
@@ -113,6 +140,102 @@ async def upgrade_hermes(
 ) -> ApiResponse:
     background_tasks.add_task(_do_upgrade, settings)
     return ApiResponse(ok=True, data={"message": "Upgrade started in background"})
+
+
+async def _do_upgrade_mgmt(settings: Settings) -> None:
+    """Refresh management-api sources from raw GitHub, reinstall, restart unit.
+
+    Two-path strategy:
+      - If /opt/hermes-mgmt is a git checkout: ``git pull``.
+      - Otherwise (the default install layout): re-download each known file
+        from the canonical raw URL.
+
+    Restart is fire-and-forget because the request must return before the
+    uvicorn worker dies on `systemctl restart hermes-mgmt`. We give the
+    background task ~3s to land the install before triggering restart.
+    """
+    try:
+        mgmt_path = Path(_MGMT_DIR)
+        git_dir = mgmt_path / ".git"
+
+        if git_dir.exists():
+            logger.info("mgmt upgrade: git pull in %s", _MGMT_DIR)
+            proc = await asyncio.create_subprocess_exec(
+                "git", "-C", _MGMT_DIR, "pull",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_b, stderr_b = await proc.communicate()
+            logger.info(
+                "git pull: %s %s",
+                stdout_b.decode(errors="replace"),
+                stderr_b.decode(errors="replace"),
+            )
+        else:
+            logger.info("mgmt upgrade: re-downloading %d files from raw URL", len(_MGMT_FILES))
+            for rel in _MGMT_FILES:
+                dest = mgmt_path / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                proc = await asyncio.create_subprocess_exec(
+                    "curl", "-fsSL",
+                    f"{_MGMT_REPO_RAW}/management-api/{rel}",
+                    "-o", str(dest),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr_b = await proc.communicate()
+                if proc.returncode != 0:
+                    logger.error("mgmt fetch failed: %s — %s", rel, stderr_b.decode(errors="replace"))
+
+        uv_bin = _MGMT_VENV_UV
+        if not Path(uv_bin).exists():
+            uv_bin = shutil.which("uv") or "uv"
+        proc2 = await asyncio.create_subprocess_exec(
+            uv_bin, "pip", "install", "-e", ".",
+            cwd=_MGMT_DIR,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_b2, stderr_b2 = await proc2.communicate()
+        logger.info(
+            "mgmt uv install: %s %s",
+            stdout_b2.decode(errors="replace"),
+            stderr_b2.decode(errors="replace"),
+        )
+
+        # Restart self last; this terminates the current uvicorn worker but
+        # systemd respawns it immediately (Restart=always).
+        await asyncio.sleep(1)
+        allowed = settings.allowed_services
+        if "hermes-mgmt" in allowed:
+            logger.info("Restarting hermes-mgmt to load new code...")
+            await restart("hermes-mgmt", allowed)
+    except Exception as exc:
+        logger.error("Mgmt upgrade failed: %s", exc)
+
+
+@router.post(
+    "/api/upgrade-mgmt",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=ApiResponse,
+)
+async def upgrade_mgmt(
+    background_tasks: BackgroundTasks,
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> ApiResponse:
+    """Upgrade the management-api itself in place.
+
+    Idempotent: re-pulls all Python sources from the canonical raw URL (or
+    `git pull` if the install is a git checkout), re-runs `uv pip install`,
+    and restarts `hermes-mgmt.service`. The response is returned via 202
+    Accepted before the unit cycles, so the caller will see a clean
+    answer even though uvicorn restarts seconds later.
+    """
+    background_tasks.add_task(_do_upgrade_mgmt, settings)
+    return ApiResponse(
+        ok=True,
+        data={"message": "Management API upgrade started in background"},
+    )
 
 
 @router.post("/api/reset", response_model=ApiResponse)

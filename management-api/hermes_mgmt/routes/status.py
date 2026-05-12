@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
 import time
 from typing import Annotated
 
@@ -29,10 +30,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["status"], dependencies=[Depends(require_auth)])
 
 
+def _resolve_public_ip(fallback: str) -> str:
+    """Best-effort: report the IP a remote client would reach this VPS on.
+
+    Order: first non-loopback IPv4 from `hostname -I` → settings default.
+    Avoids 127.0.0.1 leaking out when .env didn't preseed HERMES_DROPLET_IP.
+    """
+    try:
+        out = subprocess.check_output(["hostname", "-I"], text=True, timeout=2)
+        for ip in out.strip().split():
+            if "." in ip and not ip.startswith("127."):
+                return ip
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        pass
+    return fallback
+
+
 @router.get("/api/info", response_model=ApiResponse)
 async def get_info(settings: Annotated[Settings, Depends(get_settings_dep)]) -> ApiResponse:
     version_result = await run_hermes("version", [])
     hermes_ver = version_result.stdout.strip() or "unknown"
+    public_ip = _resolve_public_ip(settings.droplet_ip)
     # When HERMES_AUTH_TOKEN is set, dashboard_url is the one-click link Caddy
     # consumes (`?token=…` -> sets 30-day cookie -> redirects to /). Otherwise
     # fall back to the bare URL.
@@ -44,7 +62,7 @@ async def get_info(settings: Annotated[Settings, Depends(get_settings_dep)]) -> 
         ok=True,
         data=InfoResponse(
             domain=settings.domain,
-            ip=settings.droplet_ip,
+            ip=public_ip,
             hermes_version=hermes_ver,
             mgmt_version=__version__,
             dashboard_url=dashboard_url,
