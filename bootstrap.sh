@@ -78,12 +78,22 @@ for arg in "$@"; do
 done
 
 # ---- 1. Wait for cloud-init ----
+# cloud-init may finish with exit code 2 (RECOVERABLE_ERROR / warnings) even
+# though everything succeeded; under `set -euo pipefail` that would kill the
+# bootstrap silently. Capture status separately and treat non-fatal codes (0/2)
+# as success. https://github.com/canonical/cloud-init/issues/4439
 if command -v cloud-init &>/dev/null; then
     log "Waiting for cloud-init to finish..."
-    cloud-init status --wait 2>&1 | while IFS= read -r line; do
-        log "cloud-init: $line"
-    done
-    log "cloud-init done."
+    set +e
+    cloud-init status --wait >/tmp/cloud-init-wait.log 2>&1
+    ci_rc=$?
+    set -e
+    while IFS= read -r line; do log "cloud-init: $line"; done < /tmp/cloud-init-wait.log
+    rm -f /tmp/cloud-init-wait.log
+    case "$ci_rc" in
+        0|2) log "cloud-init done (exit=$ci_rc)." ;;
+        *)   log "WARN: cloud-init exited $ci_rc; continuing anyway." ;;
+    esac
 else
     log "cloud-init not present, skipping wait."
 fi
