@@ -37,6 +37,9 @@ class InfoResponse(BaseModel):
     hermes_version: str
     mgmt_version: str
     dashboard_url: str
+    # AUTH_TOKEN Caddy expects in `?token=…` on first visit.
+    # Null when HERMES_AUTH_TOKEN is not set in .env.
+    auth_token: str | None = None
 
 
 class LoginRequest(BaseModel):

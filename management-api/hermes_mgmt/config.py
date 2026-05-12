@@ -27,6 +27,11 @@ class Settings(BaseSettings):
         default="changeme-set-HERMES_MGMT_SESSION_SECRET-in-env",
         alias="hermes_mgmt_session_secret",
     )
+    # Token Caddy's auth gate accepts in `?token=…` (first visit) before it
+    # drops a 30-day cookie. Exposed via GET /api/info as part of dashboard_url
+    # so the provisioning system (Hostbill) can hand a one-click link to the
+    # end customer.
+    auth_token: str = Field(default="", alias="hermes_auth_token")
     install_dir: Path = Field(default=Path("/opt/hermes"), alias="hermes_install_dir")
     templates_dir: Path = Field(
         default=Path("/etc/hermes/config"), alias="hermes_templates_dir"

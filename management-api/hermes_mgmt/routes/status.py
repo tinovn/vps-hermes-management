@@ -33,7 +33,13 @@ router = APIRouter(tags=["status"], dependencies=[Depends(require_auth)])
 async def get_info(settings: Annotated[Settings, Depends(get_settings_dep)]) -> ApiResponse:
     version_result = await run_hermes("version", [])
     hermes_ver = version_result.stdout.strip() or "unknown"
-    dashboard_url = f"https://{settings.domain}/dashboard"
+    # When HERMES_AUTH_TOKEN is set, dashboard_url is the one-click link Caddy
+    # consumes (`?token=…` -> sets 30-day cookie -> redirects to /). Otherwise
+    # fall back to the bare URL.
+    if settings.auth_token:
+        dashboard_url = f"https://{settings.domain}/?token={settings.auth_token}"
+    else:
+        dashboard_url = f"https://{settings.domain}/"
     return ApiResponse(
         ok=True,
         data=InfoResponse(
@@ -42,6 +48,7 @@ async def get_info(settings: Annotated[Settings, Depends(get_settings_dep)]) -> 
             hermes_version=hermes_ver,
             mgmt_version=__version__,
             dashboard_url=dashboard_url,
+            auth_token=settings.auth_token or None,
         ).model_dump(),
     )
 
