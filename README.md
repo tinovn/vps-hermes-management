@@ -131,8 +131,15 @@ curl -X PUT -H "Authorization: Bearer $MGMT_KEY" -H "Content-Type: application/j
 # Restart
 curl -X POST -H "Authorization: Bearer $MGMT_KEY" http://localhost:9997/api/restart
 
-# Upgrade Hermes
+# Upgrade Hermes Agent (git pull + reinstall + restart gateway+dashboard)
 curl -X POST -H "Authorization: Bearer $MGMT_KEY" http://localhost:9997/api/upgrade
+
+# Upgrade management API itself (re-pulls /opt/hermes-mgmt sources + restart hermes-mgmt)
+curl -X POST -H "Authorization: Bearer $MGMT_KEY" http://localhost:9997/api/upgrade-mgmt
+
+# Get one-click dashboard URL (with ?token= for first visit, sets cookie)
+curl -H "Authorization: Bearer $MGMT_KEY" http://localhost:9997/api/info \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['dashboard_url'])"
 ```
 
 ## Management API — full reference
@@ -168,14 +175,31 @@ Validation errors return FastAPI's standard `422` with `{ "detail": [...] }`.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/health` | none | Liveness probe — returns `{"ok": true, "version": "0.1.0"}` |
-| GET | `/api/info` | bearer | Domain, IP, Hermes + mgmt versions, dashboard URL |
+| GET | `/api/info` | bearer | Domain, public IP, Hermes + mgmt versions, **one-click `dashboard_url` with `?token=`**, raw `auth_token` |
 | GET | `/api/status` | bearer | systemd active/inactive state for each Hermes service |
 | GET | `/api/version` | bearer | Full `hermes version` output |
 | GET | `/api/system` | bearer | CPU%, memory, disk, uptime, load avg (via `psutil`) |
 | GET | `/api/domain` | bearer | Current `DOMAIN` from `.env` |
 
 ```bash
-curl -s -H "Authorization: Bearer $MGMT_KEY" http://localhost:9997/api/system
+curl -s -H "Authorization: Bearer $MGMT_KEY" http://<VPS-IP>:9997/api/info
+# { "ok": true, "data": {
+#     "domain":         "wxfparstk.tino.page",
+#     "ip":             "103.142.27.98",     # resolved live, not 127.0.0.1
+#     "hermes_version": "Hermes Agent v0.13.0 (2026.5.7) ...",
+#     "mgmt_version":   "0.1.0",
+#     "dashboard_url":  "https://wxfparstk.tino.page/?token=<AUTH_TOKEN>",
+#     "auth_token":     "<AUTH_TOKEN>"       # null if HERMES_AUTH_TOKEN unset
+# }, "error": null }
+```
+
+Provisioning systems (Hostbill, n8n, ...) can pass `dashboard_url`
+directly to end customers as a one-click link; Caddy sets the
+`hermes_auth` cookie on first visit and the token is stripped from
+browser history via the 302 redirect.
+
+```bash
+curl -s -H "Authorization: Bearer $MGMT_KEY" http://<VPS-IP>:9997/api/system
 # { "ok": true, "data": {
 #     "cpu_percent": 0.0,
 #     "memory": {"total": 4105515008, "available": 3371732992, "percent": 17.9},
@@ -196,7 +220,7 @@ curl -s -H "Authorization: Bearer $MGMT_KEY" http://localhost:9997/api/system
 | PUT | `/api/auth/change-password` | `{old_password, new_password}` | Rotate password |
 | DELETE | `/api/auth/user` | — | Remove the current user account |
 
-#### 3) Service control (6) — **destructive**
+#### 3) Service control (7) — **destructive**
 
 | Method | Path | Body | Description |
 |---|---|---|---|
@@ -204,9 +228,21 @@ curl -s -H "Authorization: Bearer $MGMT_KEY" http://localhost:9997/api/system
 | POST | `/api/stop` | — | Stop all Hermes services |
 | POST | `/api/start` | — | Start all Hermes services |
 | POST | `/api/rebuild` | — | `cd web && npm install && npm run build`, then restart dashboard |
-| POST | `/api/upgrade` | — | `git pull` Hermes + `uv pip install -e '.[…]'` + restart |
+| POST | `/api/upgrade` | — | `git pull` Hermes Agent + `uv pip install -e '.[…]'` + restart gateway/dashboard. Returns 202 Accepted; runs in background |
+| POST | `/api/upgrade-mgmt` | — | **Self-update**: re-pulls all `/opt/hermes-mgmt/` sources from raw GitHub (or `git pull` if checked out), reinstalls via `uv pip install -e .`, restarts `hermes-mgmt.service`. Returns 202 before uvicorn restarts |
 | POST | `/api/reset` | `{"confirm":"RESET"}` | Wipe config + sessions (requires explicit confirm string) |
 | PUT | `/api/domain` | `{domain}` | Change `DOMAIN` in `.env`, re-renders Caddyfile, restarts Caddy |
+
+```bash
+# Bootstrap the upgrade endpoint itself the first time (mgmt-api was installed
+# before /api/upgrade-mgmt existed). All subsequent upgrades can use the API.
+ssh root@<VPS> 'curl -fsSL https://raw.githubusercontent.com/tinovn/vps-hermes-management/main/scripts/upgrade-mgmt.sh | bash'
+
+# Once /api/upgrade-mgmt is live, upgrade in place via API:
+curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" \
+  http://<VPS-IP>:9997/api/upgrade-mgmt
+# { "ok": true, "data": {"message": "Management API upgrade started in background"} }
+```
 
 #### 4) Config (5)
 
