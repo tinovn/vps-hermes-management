@@ -29,12 +29,41 @@
 
 set -euo pipefail
 
+# ---- Detach from invoking SSH session ------------------------------------
+# Hostbill / cron / any phpseclib-style caller invokes us with a short SSH
+# timeout (e.g. setTimeout(30)). cloud-init's --wait can take 1-3 minutes on
+# a fresh VPS, so the SSH session is torn down mid-run and the child bash
+# receives SIGHUP. To survive, on the first entry we re-spawn ourselves with
+# setsid + nohup, redirect output to the install log, and exit immediately
+# so the caller sees a clean exit 0 within milliseconds.
+readonly LOG_FILE="/var/log/hermes-install.log"
+if [[ "${HERMES_BOOTSTRAP_DETACHED:-0}" != "1" ]]; then
+    mkdir -p /opt/hermes
+    mkdir -p "$(dirname "$LOG_FILE")"
+    # Persist the script on disk so setsid can re-exec it (we may be running
+    # under `curl … | bash`, in which case $0 is just "bash").
+    self="/opt/hermes/.bootstrap.sh"
+    if [[ -f "$0" && "$0" != "bash" && "$0" != "-bash" ]]; then
+        cp -f "$0" "$self"
+    else
+        # Re-fetch from the same raw URL we'd otherwise serve install.sh from.
+        curl -fsSL "https://raw.githubusercontent.com/tinovn/vps-hermes-management/main/bootstrap.sh" \
+            -o "$self" || { echo "FATAL: bootstrap self-download failed" >&2; exit 1; }
+    fi
+    chmod +x "$self"
+    HERMES_BOOTSTRAP_DETACHED=1 setsid nohup bash "$self" "$@" \
+        >>"$LOG_FILE" 2>&1 </dev/null &
+    disown 2>/dev/null || true
+    echo "hermes-bootstrap: detached (pid $!). Tail $LOG_FILE for progress."
+    exit 0
+fi
+
 readonly REPO_RAW="https://raw.githubusercontent.com/tinovn/vps-hermes-management/main"
 readonly BOOT_DIR="/opt/hermes"
 readonly INSTALL_SCRIPT="${BOOT_DIR}/hermes-install.sh"
 readonly INSTALL_ARGS="${BOOT_DIR}/hermes-install.args"
 readonly ENV_FILE="${BOOT_DIR}/.env"
-readonly LOG_FILE="/var/log/hermes-install.log"
+# LOG_FILE already declared above (before detach) so it survives re-exec.
 readonly SERVICE_NAME="hermes-install"
 
 mkdir -p "$BOOT_DIR"
