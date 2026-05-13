@@ -81,9 +81,21 @@ async def set_env_key(
 @router.delete("/api/env/{key}", response_model=ApiResponse)
 async def delete_env_key(
     key: str,
+    background_tasks: BackgroundTasks,
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> ApiResponse:
     _validate_env_key(key)
     found_a = delete_env(settings.env_file, key)
     found_b = delete_env(settings.hermes_home / ".env", key)
+
+    async def do_restart() -> None:
+        allowed = settings.allowed_services
+        for svc in ("hermes-gateway", "hermes-dashboard"):
+            if svc in allowed:
+                try:
+                    await restart(svc, allowed)
+                except Exception as exc:
+                    logger.error("Failed to restart %s: %s", svc, exc)
+
+    background_tasks.add_task(do_restart)
     return ApiResponse(ok=True, data={"key": key, "removed": found_a or found_b})
