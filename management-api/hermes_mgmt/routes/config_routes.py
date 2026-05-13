@@ -85,7 +85,7 @@ async def set_provider(
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> ApiResponse:
     model_string = _normalize_model_string(body.provider, body.model)
-    result = await run_hermes("config", ["set", "model.default", model_string])
+    result = await run_hermes("config", ["set", "model.default", body.model])
     if result.exit_code != 0:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -105,7 +105,7 @@ async def set_provider(
             logger.error("Failed to restart hermes-gateway: %s", exc)
 
     background_tasks.add_task(do_restart)
-    return ApiResponse(ok=True, data={"provider": body.provider, "model": model_string})
+    return ApiResponse(ok=True, data={"provider": body.provider, "model": body.model})
 
 
 @router.put("/api/config/api-key", response_model=ApiResponse)
