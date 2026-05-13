@@ -250,7 +250,7 @@ curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" \
 |---|---|---|---|
 | GET | `/api/config` | — | Current `config.yaml` content (API keys masked as `sk-****<last4>`) |
 | GET | `/api/providers` | — | Lists all `*.json` templates in `/etc/hermes/config/` (15 by default) |
-| PUT | `/api/config/provider` | `{provider, model}` | Set `model.primary`. Strips a duplicate `<provider>/` prefix if caller already added it |
+| PUT | `/api/config/provider` | `{provider, model}` | Sets `model.default` (`<provider>/<bare-model>`) and `model.provider` in `config.yaml`. Strips a duplicate `<provider>/` prefix if caller already added it |
 | PUT | `/api/config/api-key` | `{provider, api_key}` | Writes `<PROVIDER>_API_KEY` to `.env`, restarts gateway |
 | DELETE | `/api/config/api-key?provider=<p>` | — | Remove API key from `.env` |
 | POST | `/api/config/test-key` | `{provider, api_key}` | `GET <base_url>/v1/models` (or provider-specific path) — does **not** save the key |

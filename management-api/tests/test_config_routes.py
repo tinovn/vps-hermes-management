@@ -9,7 +9,7 @@ from hermes_mgmt.routes.config_routes import _normalize_model_string
 class TestNormalizeModelString:
     """Regression coverage for the double-prefix bug in PUT /api/config/provider.
 
-    Hermes expects ``model.primary`` to be ``<provider>/<bare-model>``.
+    Hermes expects ``model.default`` to be ``<provider>/<bare-model>``.
     Earlier the route built it via ``f"{provider}/{model}"`` blindly, which
     produced ``deepseek/deepseek/deepseek-chat`` when callers passed an
     already-prefixed model.

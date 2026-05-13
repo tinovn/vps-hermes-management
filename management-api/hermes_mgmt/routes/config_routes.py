@@ -85,11 +85,17 @@ async def set_provider(
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> ApiResponse:
     model_string = _normalize_model_string(body.provider, body.model)
-    result = await run_hermes("config", ["set", "model.primary", model_string])
+    result = await run_hermes("config", ["set", "model.default", model_string])
     if result.exit_code != 0:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"hermes config set failed: {result.stderr}",
+            detail=f"hermes config set model.default failed: {result.stderr}",
+        )
+    result = await run_hermes("config", ["set", "model.provider", body.provider])
+    if result.exit_code != 0:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"hermes config set model.provider failed: {result.stderr}",
         )
 
     async def do_restart() -> None:
