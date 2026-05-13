@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends
 
 from hermes_mgmt import __version__
 from hermes_mgmt.cli_runner import run_hermes
-from hermes_mgmt.config import Settings
+from hermes_mgmt.config import Settings, get_settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
 from hermes_mgmt.env_file import set_env
 from hermes_mgmt.models import (
@@ -134,6 +134,10 @@ async def set_domain(
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> ApiResponse:
     set_env(settings.env_file, "DOMAIN", body.domain)
+    # Settings is lru_cache'd at startup; without invalidation, GET /api/info
+    # and other endpoints would keep returning the old domain until the
+    # service restarts.
+    get_settings.cache_clear()
 
     async def restart_caddy() -> None:
         try:
