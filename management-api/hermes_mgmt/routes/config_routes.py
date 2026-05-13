@@ -85,13 +85,22 @@ async def set_provider(
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> ApiResponse:
     model_string = _normalize_model_string(body.provider, body.model)
-    result = await run_hermes("config", ["set", "model.default", body.model])
+    # systemd unit's EnvironmentFile may not propagate HERMES_HOME to the
+    # subprocess on all distros; pass it explicitly so the CLI never falls
+    # back to $HOME/.hermes (which on the service's root account would be
+    # /root/.hermes, a different file from the one GET /api/config reads).
+    hermes_env = {"HERMES_HOME": str(settings.hermes_home)}
+    result = await run_hermes(
+        "config", ["set", "model.default", body.model], env_overrides=hermes_env
+    )
     if result.exit_code != 0:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"hermes config set model.default failed: {result.stderr}",
         )
-    result = await run_hermes("config", ["set", "model.provider", body.provider])
+    result = await run_hermes(
+        "config", ["set", "model.provider", body.provider], env_overrides=hermes_env
+    )
     if result.exit_code != 0:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
