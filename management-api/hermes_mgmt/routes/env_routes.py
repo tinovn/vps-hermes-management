@@ -6,9 +6,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
+from hermes_mgmt.cli_runner import run_hermes
 from hermes_mgmt.config import Settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
-from hermes_mgmt.env_file import delete_env, list_env, set_env
+from hermes_mgmt.env_file import delete_env, mask_value, read_env
 from hermes_mgmt.models import ApiResponse, EnvKeyRequest
 from hermes_mgmt.systemd_ctl import restart
 
@@ -31,8 +32,15 @@ def _validate_env_key(key: str) -> None:
 async def get_env(
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> ApiResponse:
-    masked = list_env(settings.env_file, mask=True)
-    return ApiResponse(ok=True, data=masked)
+    # Two .env files coexist: /opt/hermes/.env (systemd EnvironmentFile —
+    # service auth tokens, ports, domain) and HERMES_HOME/.env (where
+    # Hermes itself stores provider keys, the file the Dashboard UI reads).
+    # Merge with HERMES_HOME taking priority for overlapping keys.
+    merged = read_env(settings.env_file)
+    merged.update(read_env(settings.hermes_home / ".env"))
+    return ApiResponse(
+        ok=True, data={k: mask_value(k, v) for k, v in merged.items()}
+    )
 
 
 @router.put("/api/env/{key}", response_model=ApiResponse)
@@ -43,7 +51,19 @@ async def set_env_key(
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> ApiResponse:
     _validate_env_key(key)
-    set_env(settings.env_file, key, body.value)
+    # Write via `hermes config set` so the value lands in HERMES_HOME/.env
+    # (the file Hermes Dashboard reads to show "configured"). Writing
+    # /opt/hermes/.env directly is invisible to the UI.
+    result = await run_hermes(
+        "config",
+        ["set", key, body.value],
+        env_overrides={"HERMES_HOME": str(settings.hermes_home)},
+    )
+    if result.exit_code != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"hermes config set {key} failed: {result.stderr}",
+        )
 
     async def do_restart() -> None:
         allowed = settings.allowed_services
@@ -64,5 +84,6 @@ async def delete_env_key(
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> ApiResponse:
     _validate_env_key(key)
-    found = delete_env(settings.env_file, key)
-    return ApiResponse(ok=True, data={"key": key, "removed": found})
+    found_a = delete_env(settings.env_file, key)
+    found_b = delete_env(settings.hermes_home / ".env", key)
+    return ApiResponse(ok=True, data={"key": key, "removed": found_a or found_b})
