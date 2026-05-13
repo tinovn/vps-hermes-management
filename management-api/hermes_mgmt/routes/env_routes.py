@@ -9,7 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from hermes_mgmt.cli_runner import run_hermes
 from hermes_mgmt.config import Settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
-from hermes_mgmt.env_file import delete_env, mask_value, read_env
+from hermes_mgmt.env_file import delete_env, mask_value, read_env, set_env
 from hermes_mgmt.models import ApiResponse, EnvKeyRequest
 from hermes_mgmt.systemd_ctl import restart
 
@@ -51,9 +51,14 @@ async def set_env_key(
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> ApiResponse:
     _validate_env_key(key)
-    # Write via `hermes config set` so the value lands in HERMES_HOME/.env
-    # (the file Hermes Dashboard reads to show "configured"). Writing
-    # /opt/hermes/.env directly is invisible to the UI.
+    # Hermes splits its env across two files and reads each for a different
+    # purpose, so we must update both:
+    #   - HERMES_HOME/.env: Hermes Dashboard reads it to render
+    #     "configured" badges in the UI. Write via `hermes config set`.
+    #   - /opt/hermes/.env: systemd EnvironmentFile= for the services.
+    #     Adapter code (e.g. anthropic_adapter.os.getenv) only sees vars
+    #     loaded here, so writing only HERMES_HOME/.env makes the key
+    #     visible in UI but unusable for real API calls.
     result = await run_hermes(
         "config",
         ["set", key, body.value],
@@ -64,6 +69,7 @@ async def set_env_key(
             status_code=500,
             detail=f"hermes config set {key} failed: {result.stderr}",
         )
+    set_env(settings.env_file, key, body.value)
 
     async def do_restart() -> None:
         allowed = settings.allowed_services

@@ -11,7 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, s
 from hermes_mgmt.cli_runner import run_hermes
 from hermes_mgmt.config import Settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
-from hermes_mgmt.env_file import delete_env, read_env
+from hermes_mgmt.env_file import delete_env, read_env, set_env
 from hermes_mgmt.hermes_fs import read_config_yaml
 from hermes_mgmt.models import ApiKeyRequest, ApiResponse, ProviderConfigRequest
 from hermes_mgmt.systemd_ctl import restart
@@ -124,9 +124,7 @@ async def set_api_key(
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> ApiResponse:
     env_key = f"{body.provider.upper().replace('-', '_')}_API_KEY"
-    # Route through `hermes config set` (writes to HERMES_HOME/.env) so the
-    # Hermes Dashboard UI picks the key up as "configured". Writing
-    # /opt/hermes/.env directly is invisible to the UI.
+    # Write to both env files (see env_routes.set_env_key for the why).
     result = await run_hermes(
         "config",
         ["set", env_key, body.api_key],
@@ -137,6 +135,7 @@ async def set_api_key(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"hermes config set {env_key} failed: {result.stderr}",
         )
+    set_env(settings.env_file, env_key, body.api_key)
 
     async def do_restart() -> None:
         try:
