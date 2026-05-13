@@ -5,8 +5,15 @@
   "base_url": "https://api-inference.huggingface.co",
   "test_endpoint": "/models",
   "models": [
-    "huggingface/meta-llama/Llama-4-Maverick-17B",
-    "huggingface/Qwen/Qwen3-72B"
+    "huggingface/moonshotai/Kimi-K2.5",
+    "huggingface/moonshotai/Kimi-K2.6",
+    "huggingface/moonshotai/Kimi-K2-Thinking",
+    "huggingface/Qwen/Qwen3.5-397B-A17B",
+    "huggingface/Qwen/Qwen3.5-35B-A3B",
+    "huggingface/deepseek-ai/DeepSeek-V3.2",
+    "huggingface/MiniMaxAI/MiniMax-M2.5",
+    "huggingface/zai-org/GLM-5",
+    "huggingface/XiaomiMiMo/MiMo-V2-Flash"
   ],
-  "default_model": "huggingface/meta-llama/Llama-4-Maverick-17B"
+  "default_model": "huggingface/moonshotai/Kimi-K2.5"
 }

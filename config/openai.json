@@ -5,10 +5,14 @@
   "base_url": "https://api.openai.com",
   "test_endpoint": "/v1/models",
   "models": [
-    "openai/gpt-5.2",
-    "openai/gpt-5.2-mini",
-    "openai/o4",
-    "openai/gpt-4o"
+    "openai/gpt-5.4",
+    "openai/gpt-5.4-mini",
+    "openai/gpt-5-mini",
+    "openai/gpt-5.3-codex",
+    "openai/gpt-5.2-codex",
+    "openai/gpt-4.1",
+    "openai/gpt-4o",
+    "openai/gpt-4o-mini"
   ],
-  "default_model": "openai/gpt-5.2-mini"
+  "default_model": "openai/gpt-5.4"
 }

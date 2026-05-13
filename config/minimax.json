@@ -4,6 +4,11 @@
   "env_var": "MINIMAX_API_KEY",
   "base_url": "https://api.minimax.io",
   "test_endpoint": "/v1/models",
-  "models": ["minimax/m2", "minimax/abab-7-chat"],
-  "default_model": "minimax/m2"
+  "models": [
+    "minimax/MiniMax-M2.7",
+    "minimax/MiniMax-M2.5",
+    "minimax/MiniMax-M2.1",
+    "minimax/MiniMax-M2"
+  ],
+  "default_model": "minimax/MiniMax-M2.7"
 }

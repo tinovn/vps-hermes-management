@@ -5,8 +5,10 @@
   "base_url": "https://api.deepseek.com",
   "test_endpoint": "/v1/models",
   "models": [
+    "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4-flash",
-    "deepseek/deepseek-v4-pro"
+    "deepseek/deepseek-chat",
+    "deepseek/deepseek-reasoner"
   ],
-  "default_model": "deepseek/deepseek-v4-flash"
+  "default_model": "deepseek/deepseek-v4-pro"
 }
