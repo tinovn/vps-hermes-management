@@ -18,6 +18,7 @@ from hermes_mgmt.config import Settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
 from hermes_mgmt.models import ApiResponse
 from hermes_mgmt.routes.v2._base import cli_payload, raise_for_exit_code, run_for
+from hermes_mgmt.routes.v2._parsers import parse_profile
 
 router = APIRouter(
     prefix="/api/v2/profile",
@@ -44,6 +45,16 @@ class CreateRequest(BaseModel):
 
 class RenameRequest(BaseModel):
     new_name: str = Field(min_length=1, max_length=64)
+
+
+@router.get("", response_model=ApiResponse)
+async def get_active(
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> ApiResponse:
+    """Return the current active profile (runs `hermes profile` with no args)."""
+    result = await run_for(settings, "profile", [])
+    raise_for_exit_code(result, "hermes profile failed")
+    return ApiResponse(ok=True, data=cli_payload(result, parse_profile))
 
 
 @router.post("", response_model=ApiResponse)

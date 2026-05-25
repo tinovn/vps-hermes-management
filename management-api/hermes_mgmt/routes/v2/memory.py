@@ -16,6 +16,7 @@ from hermes_mgmt.config import Settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
 from hermes_mgmt.models import ApiResponse
 from hermes_mgmt.routes.v2._base import cli_payload, raise_for_exit_code, run_for
+from hermes_mgmt.routes.v2._parsers import parse_memory_status
 
 router = APIRouter(
     prefix="/api/v2/memory",
@@ -30,7 +31,7 @@ async def status_(
 ) -> ApiResponse:
     result = await run_for(settings, "memory", ["status"])
     raise_for_exit_code(result, "hermes memory status failed")
-    return ApiResponse(ok=True, data=cli_payload(result))
+    return ApiResponse(ok=True, data=cli_payload(result, parse_memory_status))
 
 
 @router.post("/off", response_model=ApiResponse)

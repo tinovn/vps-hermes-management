@@ -21,6 +21,7 @@ from hermes_mgmt.config import Settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
 from hermes_mgmt.models import ApiResponse
 from hermes_mgmt.routes.v2._base import cli_payload, raise_for_exit_code, run_for
+from hermes_mgmt.routes.v2._parsers import parse_sessions_list, parse_sessions_stats
 
 router = APIRouter(
     prefix="/api/v2/sessions",
@@ -57,7 +58,7 @@ async def list_sessions(
 ) -> ApiResponse:
     result = await run_for(settings, "sessions", ["list"])
     raise_for_exit_code(result, "hermes sessions list failed")
-    return ApiResponse(ok=True, data=cli_payload(result))
+    return ApiResponse(ok=True, data=cli_payload(result, parse_sessions_list))
 
 
 @router.get("/stats", response_model=ApiResponse)
@@ -66,7 +67,7 @@ async def stats(
 ) -> ApiResponse:
     result = await run_for(settings, "sessions", ["stats"])
     raise_for_exit_code(result, "hermes sessions stats failed")
-    return ApiResponse(ok=True, data=cli_payload(result))
+    return ApiResponse(ok=True, data=cli_payload(result, parse_sessions_stats))
 
 
 @router.delete("/{session_id}", response_model=ApiResponse)

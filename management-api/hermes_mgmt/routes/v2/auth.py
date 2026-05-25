@@ -22,6 +22,7 @@ from hermes_mgmt.config import Settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
 from hermes_mgmt.models import ApiResponse
 from hermes_mgmt.routes.v2._base import cli_payload, raise_for_exit_code, run_for
+from hermes_mgmt.routes.v2._parsers import parse_auth_list, parse_auth_status
 
 router = APIRouter(
     prefix="/api/v2/auth",
@@ -51,7 +52,7 @@ async def list_all(
 ) -> ApiResponse:
     result = await run_for(settings, "auth", ["list"])
     raise_for_exit_code(result, "hermes auth list failed")
-    return ApiResponse(ok=True, data=cli_payload(result))
+    return ApiResponse(ok=True, data=cli_payload(result, parse_auth_list))
 
 
 @router.get("/{provider}", response_model=ApiResponse)
@@ -62,7 +63,9 @@ async def list_provider(
     _check_provider(provider)
     result = await run_for(settings, "auth", ["list", provider])
     raise_for_exit_code(result, f"hermes auth list {provider} failed")
-    return ApiResponse(ok=True, data={"provider": provider, **cli_payload(result)})
+    return ApiResponse(
+        ok=True, data={"provider": provider, **cli_payload(result, parse_auth_list)}
+    )
 
 
 @router.post("/{provider}/api-key", response_model=ApiResponse)
@@ -131,7 +134,10 @@ async def status_(
     _check_provider(provider)
     result = await run_for(settings, "auth", ["status", provider])
     raise_for_exit_code(result, f"hermes auth status {provider} failed")
-    return ApiResponse(ok=True, data={"provider": provider, **cli_payload(result)})
+    return ApiResponse(
+        ok=True,
+        data={"provider": provider, **cli_payload(result, parse_auth_status)},
+    )
 
 
 @router.post("/{provider}/logout", response_model=ApiResponse)

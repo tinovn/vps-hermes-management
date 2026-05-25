@@ -22,9 +22,9 @@ from hermes_mgmt.deps import get_settings_dep, require_auth
 from hermes_mgmt.models import ApiResponse
 from hermes_mgmt.routes.v2._base import cli_payload, raise_for_exit_code, run_for
 from hermes_mgmt.routes.v2._parsers import (
-    parse_check,
     parse_config_set,
     parse_config_show,
+    parse_config_status,
     parse_single_line,
 )
 
@@ -98,7 +98,7 @@ async def check(
     # check returns non-zero when config has drift — surface that, don't 500
     return ApiResponse(
         ok=result.exit_code == 0,
-        data=cli_payload(result, parse_check),
+        data=cli_payload(result, parse_config_status),
     )
 
 

@@ -18,6 +18,7 @@ from hermes_mgmt.config import Settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
 from hermes_mgmt.models import ApiResponse
 from hermes_mgmt.routes.v2._base import cli_payload, raise_for_exit_code, run_for
+from hermes_mgmt.routes.v2._parsers import parse_checkpoints_status
 
 router = APIRouter(tags=["v2:backup"], dependencies=[Depends(require_auth)])
 
@@ -81,7 +82,7 @@ async def checkpoints_status(
 ) -> ApiResponse:
     result = await run_for(settings, "checkpoints", ["status"])
     raise_for_exit_code(result, "hermes checkpoints status failed")
-    return ApiResponse(ok=True, data=cli_payload(result))
+    return ApiResponse(ok=True, data=cli_payload(result, parse_checkpoints_status))
 
 
 @router.post("/api/v2/checkpoints/prune", response_model=ApiResponse)

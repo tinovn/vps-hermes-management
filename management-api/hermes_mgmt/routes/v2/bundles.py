@@ -18,6 +18,7 @@ from hermes_mgmt.config import Settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
 from hermes_mgmt.models import ApiResponse
 from hermes_mgmt.routes.v2._base import cli_payload, raise_for_exit_code, run_for
+from hermes_mgmt.routes.v2._parsers import parse_bundles_list
 
 router = APIRouter(
     prefix="/api/v2/bundles",
@@ -48,7 +49,7 @@ async def list_bundles(
 ) -> ApiResponse:
     result = await run_for(settings, "bundles", ["list"])
     raise_for_exit_code(result, "hermes bundles list failed")
-    return ApiResponse(ok=True, data=cli_payload(result))
+    return ApiResponse(ok=True, data=cli_payload(result, parse_bundles_list))
 
 
 @router.post("", response_model=ApiResponse)

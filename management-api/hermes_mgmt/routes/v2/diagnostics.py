@@ -19,6 +19,12 @@ from hermes_mgmt.config import Settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
 from hermes_mgmt.models import ApiResponse
 from hermes_mgmt.routes.v2._base import cli_payload, raise_for_exit_code, run_for
+from hermes_mgmt.routes.v2._parsers import (
+    parse_doctor,
+    parse_dump,
+    parse_insights,
+    parse_status_deep,
+)
 
 router = APIRouter(
     prefix="/api/v2/diagnostics",
@@ -43,7 +49,7 @@ async def status_(
         args.append("--deep")
     result = await run_for(settings, "status", args, timeout=60)
     raise_for_exit_code(result, "hermes status failed")
-    return ApiResponse(ok=True, data=cli_payload(result))
+    return ApiResponse(ok=True, data=cli_payload(result, parse_status_deep))
 
 
 @router.post("/doctor", response_model=ApiResponse)
@@ -56,7 +62,9 @@ async def doctor(
         args.append("--fix")
     result = await run_for(settings, "doctor", args, timeout=120)
     # doctor returns non-zero when issues found; surface but don't 500
-    return ApiResponse(ok=result.exit_code == 0, data=cli_payload(result))
+    return ApiResponse(
+        ok=result.exit_code == 0, data=cli_payload(result, parse_doctor)
+    )
 
 
 @router.get("/dump", response_model=ApiResponse)
@@ -67,7 +75,7 @@ async def dump(
     args = ["--show-keys"] if show_keys else []
     result = await run_for(settings, "dump", args)
     raise_for_exit_code(result, "hermes dump failed")
-    return ApiResponse(ok=True, data=cli_payload(result))
+    return ApiResponse(ok=True, data=cli_payload(result, parse_dump))
 
 
 @router.post("/debug-share", response_model=ApiResponse)
@@ -98,7 +106,7 @@ async def insights(
         args.extend(["--source", source])
     result = await run_for(settings, "insights", args, timeout=60)
     raise_for_exit_code(result, "hermes insights failed")
-    return ApiResponse(ok=True, data=cli_payload(result))
+    return ApiResponse(ok=True, data=cli_payload(result, parse_insights))
 
 
 @router.get("/logs", response_model=ApiResponse)

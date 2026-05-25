@@ -20,6 +20,7 @@ from hermes_mgmt.config import Settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
 from hermes_mgmt.models import ApiResponse
 from hermes_mgmt.routes.v2._base import cli_payload, raise_for_exit_code, run_for
+from hermes_mgmt.routes.v2._parsers import parse_cron_list
 
 router = APIRouter(
     prefix="/api/v2/cron",
@@ -57,7 +58,7 @@ async def list_jobs(
 ) -> ApiResponse:
     result = await run_for(settings, "cron", ["list"])
     raise_for_exit_code(result, "hermes cron list failed")
-    return ApiResponse(ok=True, data=cli_payload(result))
+    return ApiResponse(ok=True, data=cli_payload(result, parse_cron_list))
 
 
 @router.post("", response_model=ApiResponse)
