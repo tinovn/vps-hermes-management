@@ -75,10 +75,223 @@ Frontend rule: ưu tiên `data.parsed`, dùng `data.stdout` chỉ khi cần hi�
 
 ### Cảnh báo về `stdout`
 
-`hermes config show`, `hermes status`, `hermes sessions list`, v.v. trả output **dạng text trang trí ANSI**. Khi render ra UI cần:
-1. Strip ANSI escapes (`/\x1b\[[0-9;]*m/g`)
-2. Hoặc parse bằng regex tùy lệnh
-3. Hoặc đơn giản hiển thị trong `<pre>` block
+`stdout` đã được **ANSI-stripped** bởi server, nhưng vẫn giữ box-drawing và emoji. Frontend nên đọc `data.parsed` (đã được parse thành JSON có cấu trúc); chỉ dùng `data.stdout` cho debug panel.
+
+---
+
+## 1.5 TypeScript interfaces cho `data.parsed`
+
+Mỗi endpoint trả về 1 shape khác nhau. Dưới đây là contract chính thức — copy thẳng vào codebase FE:
+
+```ts
+// Shared envelope
+interface ApiResponse<T = any> {
+  ok: boolean;
+  data: (CliPayload & T) | null;
+  error: string | null;
+}
+
+interface CliPayload {
+  exit_code: number;
+  parsed: any;   // shape phụ thuộc endpoint (xem dưới)
+  stdout: string;
+  stderr: string;
+}
+
+// === config namespace ===
+type ConfigShowParsed = Record<string, Record<string, any>>;
+//   { "Paths": {"Config": "...", ...}, "Model": {"Model": {...dict}, "Max turns": 90}, ... }
+
+interface ConfigSetParsed {
+  key: string;
+  value: string | null;   // null for env-style keys that don't echo value
+  file: string;
+}
+
+type ConfigPathParsed = string;  // file path
+
+interface ConfigStatusParsed {
+  version: string;
+  version_ok: boolean;
+  required: { key: string; uses: string[] }[];
+  optional: { key: string; uses: string[] }[];  // uses = which tools the env var unlocks
+}
+
+// === auth namespace ===
+interface AuthStatusParsed {
+  provider: string;
+  status: string;          // "logged out", "logged in (token expires 2026-...)", ...
+  logged_in: boolean;
+}
+
+interface AuthListParsed {
+  pools: string[];         // raw lines; empty when no credentials configured
+  empty: boolean;
+}
+
+// === fallback ===
+interface FallbackListParsed {
+  providers: { provider: string; model: string }[];
+  empty: boolean;
+}
+
+// === sessions ===
+interface SessionsListParsed {
+  sessions: Record<string, string>[];   // table rows; empty when none
+  empty: boolean;
+}
+
+interface SessionsStatsParsed {
+  total_sessions: number;
+  total_messages: number;
+  database_size: string;   // e.g. "0.1 MB"
+}
+
+// === memory ===
+interface MemoryStatusParsed {
+  built_in: string;        // "always active"
+  provider: string;        // "(none — built-in only)" or provider name
+  plugins: { name: string; description: string }[];
+}
+
+// === skills ===
+interface SkillsListParsed {
+  skills: {
+    Name: string;
+    Category: string;
+    Source: "builtin" | "hub" | "local";
+    Trust: string;
+    Status: "enabled" | "disabled";
+  }[];
+  summary: {
+    hub_installed?: number;
+    builtin?: number;
+    local?: number;
+    enabled?: number;
+    disabled?: number;
+  };
+  footer: string | null;
+}
+
+// === bundles ===
+interface BundlesListParsed {
+  bundles: Record<string, string>[];
+  empty: boolean;
+  bundles_dir?: string;    // present when empty=true
+}
+
+// === tools ===
+interface ToolsSummaryParsed {
+  platforms: {
+    name: string;          // "CLI", "Telegram", ...
+    enabled: number;
+    total: number;
+    tools: { status: "✓" | "✗" | "⚠" | "○"; name: string }[];
+  }[];
+}
+
+// === webhook ===
+interface WebhookListParsed {
+  webhooks: Record<string, string>[];
+  enabled: boolean;        // false when platform not enabled
+}
+
+// === gateway ===
+interface GatewayStatusParsed {
+  service: string;         // "hermes-gateway.service"
+  loaded: string | null;
+  active: string | null;   // "active (running) since ..."
+  active_state: "active" | "inactive" | "failed" | null;
+  since: string | null;
+  main_pid: number | null;
+  tasks: string | null;
+  memory: string | null;
+  cpu: string | null;
+  running: boolean;
+}
+
+interface GatewayListParsed {
+  gateways: {
+    name: string;
+    current: boolean;
+    status: string;
+    running: boolean;
+  }[];
+}
+
+// === cron ===
+interface CronListParsed {
+  jobs: Record<string, string>[];   // table rows
+  empty: boolean;
+}
+
+// === kanban ===
+interface KanbanListParsed {
+  tasks: Record<string, string>[];
+  empty: boolean;
+}
+
+// === curator ===
+interface CuratorStatusParsed {
+  enabled: boolean;
+  runs?: number;
+  last_run?: string;       // "never" or timestamp
+  last_summary?: string;
+  interval?: string;       // "every 7d"
+  stale_after?: string;    // "30d unused"
+  archive_after?: string;  // "90d unused"
+}
+
+// === diagnostics ===
+type StatusDeepParsed = Record<string, Record<string, any>>;
+// Same shape as ConfigShowParsed. Values may begin with ✓/✗/⚠ indicators.
+
+interface DoctorParsed {
+  sections: Record<string, { status: "✓" | "✗" | "⚠"; message: string }[]>;
+  issues: { num: number; message: string }[];
+  issue_count: number;
+  healthy: boolean;
+}
+
+interface DumpParsed {
+  version: string;
+  os: string;
+  python: string;
+  openai_sdk: string;
+  profile: string;
+  hermes_home: string;
+  model: string;
+  provider: string;
+  terminal: string;
+  api_keys?: Record<string, string>;   // {provider: "not set" | "configured" | ...}
+  features?: Record<string, string>;
+}
+
+interface InsightsParsed {
+  empty: boolean;
+  summary?: string;        // when empty
+  lines?: string[];        // when data exists (parser will be enriched as we collect samples)
+}
+
+interface CheckpointsStatusParsed {
+  checkpoint_base?: string;
+  total_size?: string;
+  projects?: string;
+  breakdown?: Record<string, string>;
+}
+
+// === profile ===
+interface ProfileParsed {
+  active_profile: string;
+  path: string;
+  model: string;           // "deepseek-chat" (split out from "deepseek-chat (deepseek)")
+  provider: string;
+  gateway: string;         // "stopped" | "running"
+  skills: string;          // "90 installed"
+}
+```
+
+**Fallback**: nếu một endpoint v2 chưa có parser bespoke, `data.parsed` sẽ là `string[]` (mỗi phần tử là 1 dòng stdout đã strip trang trí). Hiện trạng đầy đủ trong [v2/_parsers.py](management-api/hermes_mgmt/routes/v2/_parsers.py).
 
 ---
 
