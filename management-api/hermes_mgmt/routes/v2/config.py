@@ -21,6 +21,12 @@ from hermes_mgmt.config import Settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
 from hermes_mgmt.models import ApiResponse
 from hermes_mgmt.routes.v2._base import cli_payload, raise_for_exit_code, run_for
+from hermes_mgmt.routes.v2._parsers import (
+    parse_check,
+    parse_config_set,
+    parse_config_show,
+    parse_single_line,
+)
 
 router = APIRouter(
     prefix="/api/v2/config",
@@ -50,7 +56,7 @@ async def show(
 ) -> ApiResponse:
     result = await run_for(settings, "config", ["show"])
     raise_for_exit_code(result, "hermes config show failed")
-    return ApiResponse(ok=True, data=cli_payload(result))
+    return ApiResponse(ok=True, data=cli_payload(result, parse_config_show))
 
 
 @router.post("/set", response_model=ApiResponse)
@@ -62,7 +68,7 @@ async def set_key(
     raise_for_exit_code(result, f"hermes config set {body.key} failed")
     return ApiResponse(
         ok=True,
-        data={"key": body.key, **cli_payload(result)},
+        data={"key": body.key, **cli_payload(result, parse_config_set)},
     )
 
 
@@ -72,10 +78,7 @@ async def config_path(
 ) -> ApiResponse:
     result = await run_for(settings, "config", ["path"])
     raise_for_exit_code(result, "hermes config path failed")
-    return ApiResponse(
-        ok=True,
-        data={"path": result.stdout.strip()},
-    )
+    return ApiResponse(ok=True, data=cli_payload(result, parse_single_line))
 
 
 @router.get("/env-path", response_model=ApiResponse)
@@ -84,10 +87,7 @@ async def env_path(
 ) -> ApiResponse:
     result = await run_for(settings, "config", ["env-path"])
     raise_for_exit_code(result, "hermes config env-path failed")
-    return ApiResponse(
-        ok=True,
-        data={"path": result.stdout.strip()},
-    )
+    return ApiResponse(ok=True, data=cli_payload(result, parse_single_line))
 
 
 @router.post("/check", response_model=ApiResponse)
@@ -98,7 +98,7 @@ async def check(
     # check returns non-zero when config has drift — surface that, don't 500
     return ApiResponse(
         ok=result.exit_code == 0,
-        data=cli_payload(result),
+        data=cli_payload(result, parse_check),
     )
 
 

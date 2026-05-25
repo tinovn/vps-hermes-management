@@ -53,11 +53,16 @@ Payload chuẩn cho v2 (gọi là `CliPayload`):
 ```ts
 interface CliPayload {
   exit_code: number;    // 0 = success
-  stdout: string;       // CLI stdout — text thô, có thể chứa ANSI escapes
-  stderr: string;       // CLI stderr
+  parsed: any | null;   // STRUCTURED JSON — đây là field FE nên dùng
+  stdout: string;       // CLI stdout (ANSI-stripped) — để debug/fallback
+  stderr: string;       // CLI stderr (ANSI-stripped)
   // + các field route-specific (ví dụ: provider, key, session_id, ...)
 }
 ```
+
+**Shape của `parsed` thay đổi theo từng endpoint** (xem cột "Parsed shape" trong mỗi namespace bên dưới). Khi endpoint chưa có parser bespoke, `parsed` là `list<string>` — mỗi dòng stdout đã strip trang trí.
+
+Frontend rule: ưu tiên `data.parsed`, dùng `data.stdout` chỉ khi cần hiển thị nguyên bản trong dev/debug panel.
 
 ### HTTP status codes
 
@@ -83,22 +88,47 @@ Wrap `hermes config <sub>`. Đây là core của agent settings (model, provider
 
 ### GET `/api/v2/config/show`
 
-Trả về full config dưới dạng text (`hermes config show`).
+Trả về full config đã parse thành nested dict theo từng section.
 
 **Request:** không body.
 
-**Response 200:**
+**Response 200 — `data.parsed` shape:**
+```ts
+type ConfigShowParsed = Record<string, Record<string, any>>;
+// section name → { key: value }
+```
+
+Ví dụ:
 ```json
 {
   "ok": true,
   "data": {
     "exit_code": 0,
-    "stdout": "┌─────────────────────────────────...\n◆ Paths\n  Config: /opt/hermes/.hermes/config.yaml\n...",
+    "parsed": {
+      "Paths": {
+        "Config": "/opt/hermes/.hermes/config.yaml",
+        "Secrets": "/opt/hermes/.hermes/.env",
+        "Install": "/opt/hermes/hermes-agent"
+      },
+      "API Keys": {
+        "OpenRouter": "(not set)",
+        "Anthropic": "(set, sk-****abcd)",
+        "OpenAI (STT/TTS)": "(not set)"
+      },
+      "Model": {
+        "Model": { "default": "deepseek-chat", "provider": "deepseek", "base_url": "https://api.deepseek.com/v1" },
+        "Max turns": 90
+      },
+      "Display": { "Personality": "kawaii", "Reasoning": "off" }
+    },
+    "stdout": "◆ Paths\n  Config:       /opt/hermes/.hermes/...",
     "stderr": ""
   },
   "error": null
 }
 ```
+
+Lưu ý: parser tự nhận dạng giá trị Python literal (dict/list/bool/int) — `Model` field trong ví dụ trên là dict thật, không phải string.
 
 ### POST `/api/v2/config/set`
 

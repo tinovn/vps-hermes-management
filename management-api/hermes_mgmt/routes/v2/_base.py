@@ -1,11 +1,14 @@
 """Shared helpers for v2 routes."""
 from __future__ import annotations
 
+from typing import Any, Callable
+
 from fastapi import HTTPException, status
 
 from hermes_mgmt.cli_runner import run_hermes
 from hermes_mgmt.config import Settings
 from hermes_mgmt.models import CliResponse
+from hermes_mgmt.routes.v2._parsers import parse_lines, strip_ansi
 
 
 async def run_for(
@@ -37,13 +40,35 @@ def raise_for_exit_code(result: CliResponse, label: str) -> None:
         )
 
 
-def cli_payload(result: CliResponse) -> dict:
-    """Standard data payload for endpoints that just expose CLI output.
+def cli_payload(
+    result: CliResponse,
+    parser: Callable[[str], Any] | None = None,
+) -> dict:
+    """Standard data payload for v2 endpoints.
 
-    Frontend can render `stdout` directly or use `exit_code` to branch.
+    Parameters
+    ----------
+    parser
+        Optional callable applied to stdout to produce structured JSON in
+        `parsed`. If omitted, falls back to ``parse_lines`` (list of
+        non-empty stripped lines) so frontends always get *something*
+        structured. The raw stdout is still exposed for debugging.
+
+    The shape returned is always:
+        {
+          "exit_code": int,
+          "parsed": Any | null,    # structured representation
+          "stdout": str,           # raw text (ANSI-stripped for readability)
+          "stderr": str,
+        }
     """
+    try:
+        parsed: Any = parser(result.stdout) if parser else parse_lines(result.stdout)
+    except Exception:  # pragma: no cover — parsers must not raise, but guard
+        parsed = None
     return {
         "exit_code": result.exit_code,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
+        "parsed": parsed,
+        "stdout": strip_ansi(result.stdout),
+        "stderr": strip_ansi(result.stderr),
     }
