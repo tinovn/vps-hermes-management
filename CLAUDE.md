@@ -102,10 +102,37 @@ hermes_mgmt/
     ├── logs.py          /api/logs, /api/logs/stream (SSE), /api/logs/files
     ├── auth_routes.py   /login, /api/auth/* (login, create-user, change-password, etc.)
     ├── env_routes.py    /api/env, /api/env/{key} (PUT/DELETE)
-    └── cli_routes.py    POST /api/cli — run whitelisted subcommand
+    ├── cli_routes.py    POST /api/cli — run whitelisted subcommand
+    └── v2/              CLI-mirror endpoints — thin wrappers over hermes <subcommand>
+        ├── _base.py     run_for() helper — pins HERMES_HOME per request
+        ├── config.py    /api/v2/config/{show,set,path,env-path,check,migrate}
+        ├── model.py     /api/v2/model/switch
+        ├── fallback.py  /api/v2/fallback (list/add/remove/clear)
+        ├── auth.py      /api/v2/auth/{provider}/{api-key,oauth,reset,status,logout}
+        ├── sessions.py  /api/v2/sessions (list/stats/delete/prune/rename/export)
+        ├── memory.py    /api/v2/memory/{status,off}
+        ├── skills.py    /api/v2/skills (list/install/uninstall/check/update/reset/search/inspect)
+        ├── bundles.py   /api/v2/bundles (list/create/delete/reload)
+        ├── tools.py     /api/v2/tools/summary
+        ├── webhook.py   /api/v2/webhook (list/subscribe/remove)
+        ├── gateway.py   /api/v2/gateway/{list,status,start,stop,restart}
+        ├── cron.py      /api/v2/cron (list/create/edit/pause/resume/remove)
+        ├── kanban.py    /api/v2/kanban/{tasks,boards}/*
+        ├── curator.py   /api/v2/curator/{status,run,backup,rollback,pin,unpin,archive}
+        ├── profile.py   /api/v2/profile (create/delete/use/rename)
+        ├── backup.py    /api/v2/{backup,backup/import,checkpoints/{status,prune}}
+        └── diagnostics.py /api/v2/diagnostics/{status,doctor,dump,debug-share,insights,logs}
 ```
 
 Response envelope: `ApiResponse(ok: bool, data: Any | None, error: str | None)`.
+v2 endpoints return `data = {exit_code, stdout, stderr, ...route-specific fields...}`;
+stdout is the raw CLI text since most hermes commands have no structured output.
+
+**v2 invariant:** every v2 endpoint calls `run_for(settings, ...)` from
+[`v2/_base.py`](management-api/hermes_mgmt/routes/v2/_base.py) which forces
+`HERMES_HOME=settings.hermes_home` on the subprocess. Without it, the CLI
+defaults to `$HOME/.hermes` (`/root/.hermes` under systemd) and edits the
+wrong store — same trap legacy routes hit before commit a28120e.
 
 ## Security posture
 
