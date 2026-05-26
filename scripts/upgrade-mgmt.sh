@@ -24,7 +24,9 @@ log() { echo "[upgrade-mgmt] $*"; }
 
 [[ -d "$MGMT_DIR" ]] || { log "FATAL: $MGMT_DIR not found — is hermes-vps installed?"; exit 1; }
 
-# Files mirrored from management-api/. Keep in sync with control.py::_MGMT_FILES.
+# Files mirrored from management-api/. When you add a file, append here AND in:
+#   install.sh                                  (fresh-install path)
+#   management-api/hermes_mgmt/routes/control.py::_MGMT_FILES  (POST /api/upgrade-mgmt)
 files=(
   "pyproject.toml"
   "hermes_mgmt/__init__.py"
@@ -47,6 +49,27 @@ files=(
   "hermes_mgmt/routes/auth_routes.py"
   "hermes_mgmt/routes/env_routes.py"
   "hermes_mgmt/routes/cli_routes.py"
+  # v2 routers (thin CLI wrappers — see docs/v2-api.md)
+  "hermes_mgmt/routes/v2/__init__.py"
+  "hermes_mgmt/routes/v2/_base.py"
+  "hermes_mgmt/routes/v2/_parsers.py"
+  "hermes_mgmt/routes/v2/auth.py"
+  "hermes_mgmt/routes/v2/backup.py"
+  "hermes_mgmt/routes/v2/bundles.py"
+  "hermes_mgmt/routes/v2/config.py"
+  "hermes_mgmt/routes/v2/cron.py"
+  "hermes_mgmt/routes/v2/curator.py"
+  "hermes_mgmt/routes/v2/diagnostics.py"
+  "hermes_mgmt/routes/v2/fallback.py"
+  "hermes_mgmt/routes/v2/gateway.py"
+  "hermes_mgmt/routes/v2/kanban.py"
+  "hermes_mgmt/routes/v2/memory.py"
+  "hermes_mgmt/routes/v2/model.py"
+  "hermes_mgmt/routes/v2/profile.py"
+  "hermes_mgmt/routes/v2/sessions.py"
+  "hermes_mgmt/routes/v2/skills.py"
+  "hermes_mgmt/routes/v2/tools.py"
+  "hermes_mgmt/routes/v2/webhook.py"
 )
 
 log "Pulling ${#files[@]} files from raw URL..."
