@@ -5,6 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
+from hermes_mgmt.cli_runner import run_hermes
 from hermes_mgmt.config import Settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
 from hermes_mgmt.env_file import delete_env, mask_value, read_env, set_env
@@ -58,11 +59,16 @@ _ALL_CHANNEL_VARS = {
 async def list_channels(
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> ApiResponse:
-    env = read_env(settings.env_file)
+    # Channel tokens may live in either /opt/hermes/.env (systemd
+    # EnvironmentFile) or HERMES_HOME/.env (Hermes's own store, what the
+    # Dashboard UI / `hermes config set` writes to). Merge with HERMES_HOME
+    # taking priority — see env_routes.get_env for the same pattern.
+    merged = read_env(settings.env_file)
+    merged.update(read_env(settings.hermes_home / ".env"))
     channels: list[dict] = []
     for slug, cfg in _CHANNEL_MAP.items():
         primary_key = cfg["primary"]
-        raw_value = env.get(primary_key, "")
+        raw_value = merged.get(primary_key, "")
         enabled = bool(raw_value)
         channels.append(
             {
@@ -88,15 +94,29 @@ async def set_channel(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Unknown channel '{channel}'. Valid: {sorted(_CHANNEL_MAP)}",
         )
-    set_env(settings.env_file, cfg["primary"], body.token)
+    # Write to both stores: HERMES_HOME/.env (Dashboard reads this to render
+    # "configured" badges) and /opt/hermes/.env (systemd EnvironmentFile that
+    # the gateway process sees via os.getenv). See env_routes.set_env_key.
+    hermes_env = {"HERMES_HOME": str(settings.hermes_home)}
 
-    # Write any extra key-value pairs from the body
+    async def _write_pair(env_key: str, env_val: str) -> None:
+        result = await run_hermes(
+            "config", ["set", env_key, env_val], env_overrides=hermes_env
+        )
+        if result.exit_code != 0:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"hermes config set {env_key} failed: {result.stderr}",
+            )
+        set_env(settings.env_file, env_key, env_val)
+
+    await _write_pair(cfg["primary"], body.token)
+
     if body.extra:
         for env_key, env_val in body.extra.items():
-            # Only allow known channel env vars as extras for safety
             env_key_upper = env_key.upper()
             if env_key_upper in _ALL_CHANNEL_VARS:
-                set_env(settings.env_file, env_key_upper, env_val)
+                await _write_pair(env_key_upper, env_val)
             else:
                 logger.warning("Skipping unknown extra env key: %s", env_key)
 
@@ -123,8 +143,11 @@ async def delete_channel(
             detail=f"Unknown channel '{channel}'. Valid: {sorted(_CHANNEL_MAP)}",
         )
     removed_keys: list[str] = []
+    hermes_env_file = settings.hermes_home / ".env"
     for key in [cfg["primary"], *cfg["extras"]]:
-        if delete_env(settings.env_file, key):
+        found_a = delete_env(settings.env_file, key)
+        found_b = delete_env(hermes_env_file, key)
+        if found_a or found_b:
             removed_keys.append(key)
 
     async def do_restart() -> None:
