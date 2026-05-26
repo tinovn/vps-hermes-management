@@ -326,7 +326,7 @@ Keys matching `/(_KEY|_TOKEN|_SECRET|_PASSWORD|_HASH)$/i` are returned as `sk-**
 |---|---|---|---|
 | POST | `/api/cli` | `{subcommand, args}` | Run a whitelisted `hermes <sub>` command and return stdout/stderr/exit code |
 
-Whitelist (kept in sync with `cli_runner.HERMES_WHITELIST`): `version, status, doctor, dump, debug, insights, logs, config, model, fallback, auth, sessions, memory, checkpoints, skills, bundles, tools, gateway, webhook, whatsapp, cron, kanban, curator, profile, backup, import, lsp, pairing, setup`. Anything else returns `400`.
+Whitelist: `version, status, doctor, config, model, cron, gateway, logs, skills, sessions, memory, tools, insights, auth`. Anything else returns `400`.
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" -H "Content-Type: application/json" \
@@ -334,48 +334,6 @@ curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" -H "Content-Type: applicati
   http://localhost:9997/api/cli
 # { "ok": true, "data": {"exit_code": 0, "stdout": "Hermes Agent v0.13.0 …", "stderr": ""}, "error": null }
 ```
-
-#### 10) v2 API — `hermes` CLI mirror (60+ routes, prefix `/api/v2`)
-
-Each v2 endpoint is a thin wrapper over a single `hermes <subcommand>` invocation, with `HERMES_HOME` forced to the install dir so the CLI always targets the server-wide store (`/opt/hermes/.hermes`), not the SSH user's `~/.hermes`. Data shape: `{exit_code, stdout, stderr, ...route-specific fields}`. Frontend renders `stdout` directly.
-
-| Namespace | Routes | CLI it wraps |
-|---|---|---|
-| `/api/v2/config` | show, set, path, env-path, check, migrate | `hermes config <sub>` |
-| `/api/v2/model` | switch | `hermes model <model>` |
-| `/api/v2/fallback` | list/add/remove/clear | `hermes fallback <sub>` |
-| `/api/v2/auth` | list, per-provider api-key/oauth/remove/reset/status/logout | `hermes auth <sub>` |
-| `/api/v2/sessions` | list, stats, delete, prune, rename, export | `hermes sessions <sub>` |
-| `/api/v2/memory` | status, off | `hermes memory <sub>` |
-| `/api/v2/skills` | list, install, uninstall, check, update, reset, search, inspect | `hermes skills <sub>` |
-| `/api/v2/bundles` | list, create, delete, reload | `hermes bundles <sub>` |
-| `/api/v2/tools` | summary | `hermes tools --summary` |
-| `/api/v2/webhook` | list, subscribe, remove | `hermes webhook <sub>` |
-| `/api/v2/gateway` | list, status, start, stop, restart | `hermes gateway <sub>` |
-| `/api/v2/cron` | list, create, edit, pause, resume, remove | `hermes cron <sub>` |
-| `/api/v2/kanban` | tasks (list/show/create/assign/complete/block/unblock) + boards (create/switch/rename/rm) | `hermes kanban <sub>` |
-| `/api/v2/curator` | status, run, backup, rollback, per-skill pin/unpin/archive | `hermes curator <sub>` |
-| `/api/v2/profile` | create, delete, use, rename | `hermes profile <sub>` |
-| `/api/v2/backup` | backup, backup/import, checkpoints/{status,prune} | `hermes backup`, `hermes import`, `hermes checkpoints` |
-| `/api/v2/diagnostics` | status, doctor, dump, debug-share, insights, logs | various read-only commands |
-
-```bash
-# Example — switch model
-curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" -H "Content-Type: application/json" \
-  -d '{"key":"model.default","value":"claude-sonnet-4-6"}' \
-  http://localhost:9997/api/v2/config/set
-
-# Example — add Anthropic API key (mirrors `hermes auth add anthropic --api-key ...`)
-curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" -H "Content-Type: application/json" \
-  -d '{"api_key":"sk-ant-..."}' \
-  http://localhost:9997/api/v2/auth/anthropic/api-key
-
-# Example — list sessions (raw CLI stdout in data.stdout)
-curl -s -H "Authorization: Bearer $MGMT_KEY" \
-  http://localhost:9997/api/v2/sessions
-```
-
-The v1 endpoints (`/api/config`, `/api/env`, etc.) continue to work for back-compat. v2 is the recommended interface for new clients because it maps 1:1 to the CLI documented at <https://hermes-agent.nousresearch.com/docs/reference/cli-commands>.
 
 ### API test results
 

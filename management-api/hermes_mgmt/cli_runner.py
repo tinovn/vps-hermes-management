@@ -11,45 +11,20 @@ logger = logging.getLogger(__name__)
 
 HERMES_WHITELIST: frozenset[str] = frozenset(
     {
-        # diagnostic / read-only
         "version",
         "status",
         "doctor",
-        "dump",
-        "debug",
-        "insights",
-        "logs",
-        # configuration
         "config",
         "model",
-        "fallback",
-        # auth + credentials
-        "auth",
-        # sessions / memory / context
+        "cron",
+        "gateway",
+        "logs",
+        "skills",
         "sessions",
         "memory",
-        "checkpoints",
-        # skills + tools + bundles
-        "skills",
-        "bundles",
         "tools",
-        # gateway + messaging
-        "gateway",
-        "webhook",
-        "whatsapp",
-        # scheduling + kanban
-        "cron",
-        "kanban",
-        # maintenance
-        "curator",
-        "profile",
-        "backup",
-        "import",
-        "lsp",
-        "pairing",
-        # one-shot — surface kept narrow; setup is interactive in CLI but
-        # callers may need to run with --non-interactive
-        "setup",
+        "insights",
+        "auth",
     }
 )
 
