@@ -322,10 +322,6 @@ if [[ ! -d .git ]]; then
     log "Mgmt API sources already present, skipping download"
   else
     log "Downloading management-api sources from ${MGMT_REPO_RAW}"
-    # Top-level Python package + v1 routes. Keep in sync with
-    # scripts/upgrade-mgmt.sh and management-api/hermes_mgmt/routes/control.py
-    # (_MGMT_FILES / _MGMT_V2_FILES). When you add a new file, append here
-    # AND in those two lists, or the file will not be deployed.
     for f in pyproject.toml \
              hermes_mgmt/__init__.py hermes_mgmt/main.py hermes_mgmt/config.py \
              hermes_mgmt/auth.py hermes_mgmt/deps.py hermes_mgmt/models.py \
@@ -335,18 +331,7 @@ if [[ ! -d .git ]]; then
              hermes_mgmt/routes/control.py hermes_mgmt/routes/config_routes.py \
              hermes_mgmt/routes/channels.py hermes_mgmt/routes/cron_routes.py \
              hermes_mgmt/routes/logs.py hermes_mgmt/routes/auth_routes.py \
-             hermes_mgmt/routes/env_routes.py hermes_mgmt/routes/cli_routes.py \
-             hermes_mgmt/routes/v2/__init__.py hermes_mgmt/routes/v2/_base.py \
-             hermes_mgmt/routes/v2/_parsers.py \
-             hermes_mgmt/routes/v2/auth.py hermes_mgmt/routes/v2/backup.py \
-             hermes_mgmt/routes/v2/bundles.py hermes_mgmt/routes/v2/config.py \
-             hermes_mgmt/routes/v2/cron.py hermes_mgmt/routes/v2/curator.py \
-             hermes_mgmt/routes/v2/diagnostics.py hermes_mgmt/routes/v2/fallback.py \
-             hermes_mgmt/routes/v2/gateway.py hermes_mgmt/routes/v2/kanban.py \
-             hermes_mgmt/routes/v2/memory.py hermes_mgmt/routes/v2/model.py \
-             hermes_mgmt/routes/v2/profile.py hermes_mgmt/routes/v2/sessions.py \
-             hermes_mgmt/routes/v2/skills.py hermes_mgmt/routes/v2/tools.py \
-             hermes_mgmt/routes/v2/webhook.py; do
+             hermes_mgmt/routes/env_routes.py hermes_mgmt/routes/cli_routes.py; do
       mkdir -p "$(dirname "${MGMT_DIR}/${f}")"
       curl -fsSL "${MGMT_REPO_RAW}/management-api/${f}" -o "${MGMT_DIR}/${f}" \
         || die "Failed to fetch ${f}"

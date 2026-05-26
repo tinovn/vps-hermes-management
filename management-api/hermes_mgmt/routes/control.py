@@ -26,8 +26,6 @@ _MGMT_DIR = "/opt/hermes-mgmt"
 _MGMT_VENV_UV = "/opt/hermes-mgmt/.venv/bin/uv"
 _MGMT_REPO_RAW = "https://raw.githubusercontent.com/tinovn/vps-hermes-management/main"
 _MGMT_FILES = (
-    # When you add a file here, also append it to install.sh AND
-    # scripts/upgrade-mgmt.sh — all three lists must stay in sync.
     "pyproject.toml",
     "hermes_mgmt/__init__.py",
     "hermes_mgmt/main.py",
@@ -49,27 +47,6 @@ _MGMT_FILES = (
     "hermes_mgmt/routes/auth_routes.py",
     "hermes_mgmt/routes/env_routes.py",
     "hermes_mgmt/routes/cli_routes.py",
-    # v2 routers (thin CLI wrappers — see docs/v2-api.md)
-    "hermes_mgmt/routes/v2/__init__.py",
-    "hermes_mgmt/routes/v2/_base.py",
-    "hermes_mgmt/routes/v2/_parsers.py",
-    "hermes_mgmt/routes/v2/auth.py",
-    "hermes_mgmt/routes/v2/backup.py",
-    "hermes_mgmt/routes/v2/bundles.py",
-    "hermes_mgmt/routes/v2/config.py",
-    "hermes_mgmt/routes/v2/cron.py",
-    "hermes_mgmt/routes/v2/curator.py",
-    "hermes_mgmt/routes/v2/diagnostics.py",
-    "hermes_mgmt/routes/v2/fallback.py",
-    "hermes_mgmt/routes/v2/gateway.py",
-    "hermes_mgmt/routes/v2/kanban.py",
-    "hermes_mgmt/routes/v2/memory.py",
-    "hermes_mgmt/routes/v2/model.py",
-    "hermes_mgmt/routes/v2/profile.py",
-    "hermes_mgmt/routes/v2/sessions.py",
-    "hermes_mgmt/routes/v2/skills.py",
-    "hermes_mgmt/routes/v2/tools.py",
-    "hermes_mgmt/routes/v2/webhook.py",
 )
 
 
