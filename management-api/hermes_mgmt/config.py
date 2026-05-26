@@ -36,7 +36,12 @@ class Settings(BaseSettings):
     templates_dir: Path = Field(
         default=Path("/etc/hermes/config"), alias="hermes_templates_dir"
     )
-    hermes_home: Path = Field(default=Path("/opt/hermes/.hermes"), alias="hermes_home")
+    # Hermes CLI default is $HOME/.hermes; with services running as User=root
+    # that resolves to /root/.hermes. Keep this in sync with what `hermes config
+    # path` returns in interactive shells, otherwise mgmt-api ends up reading
+    # one store while the gateway/dashboard read another. See memory
+    # project-hermes-vps-dual-env-paths.
+    hermes_home: Path = Field(default=Path("/root/.hermes"), alias="hermes_home")
     domain: str = Field(default="localhost")
     droplet_ip: str = Field(default="127.0.0.1", alias="hermes_droplet_ip")
     mgmt_port: int = Field(default=9997, alias="hermes_mgmt_port")
@@ -51,12 +56,12 @@ class Settings(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def set_hermes_home_default(cls, values: Any) -> Any:
+        # If the runtime exports HERMES_HOME (e.g. /etc/profile.d/hermes.sh or
+        # a service override), honor it. Otherwise fall back to the CLI default
+        # of ~/.hermes for the current $HOME (root → /root/.hermes).
         if isinstance(values, dict):
             if not values.get("hermes_home") and not values.get("HERMES_HOME"):
-                install_dir = values.get("hermes_install_dir") or values.get(
-                    "HERMES_INSTALL_DIR", "/opt/hermes"
-                )
-                values["hermes_home"] = str(Path(install_dir) / ".hermes")
+                values["hermes_home"] = str(Path.home() / ".hermes")
         return values
 
     @property
@@ -99,7 +104,7 @@ def get_settings() -> Settings:
             session_secret="changeme",
             install_dir=Path("/opt/hermes"),
             templates_dir=Path("/etc/hermes/config"),
-            hermes_home=Path("/opt/hermes/.hermes"),
+            hermes_home=Path("/root/.hermes"),
             domain="localhost",
             droplet_ip="127.0.0.1",
             mgmt_port=9997,

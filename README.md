@@ -73,11 +73,16 @@ port `9997` and is reached directly.
 
 ```
 /opt/hermes/                       Install root
-├── .env                           Tokens + API keys + domain
-├── .hermes/                       HERMES_HOME (config.yaml, logs, data)
+├── .env                           Service tokens + domain (systemd EnvironmentFile)
 ├── data/                          Runtime data
 ├── Caddyfile                      Caddy config (uses env vars from .env)
 └── hermes-agent/                  Upstream Hermes source (git clone, uv venv)
+
+/root/.hermes/                     HERMES_HOME — Hermes's own store
+├── config.yaml                    Model, terminal, display, ... config
+├── .env                           Provider API keys (ANTHROPIC_API_KEY, ...)
+├── sessions/, logs/, skills/      Runtime data
+└── auth.json                      OAuth tokens
 
 /opt/hermes-mgmt/                  Management API
 ├── pyproject.toml
