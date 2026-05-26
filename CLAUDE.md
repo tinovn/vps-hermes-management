@@ -34,9 +34,9 @@ All 3 services are grouped under `hermes.target` for atomic start/stop.
 
 | Path | Purpose |
 |------|---------|
-| `/opt/hermes/` | Install root; `HOME` override for Hermes processes |
-| `/opt/hermes/.env` | All env vars — loaded by systemd `EnvironmentFile=` |
-| `/opt/hermes/.hermes/` | `HERMES_HOME` — config.yaml, sessions, skills, logs |
+| `/opt/hermes/` | Install root (`hermes-agent/` source + helper files) |
+| `/opt/hermes/.env` | Service config — auth tokens, ports, domain. Loaded by systemd `EnvironmentFile=` for all 3 units |
+| `/root/.hermes/` | `HERMES_HOME` — Hermes's own store: `config.yaml`, `.env` (provider keys), sessions, skills, logs. Services run as `User=root` with default `HOME=/root`, so the CLI default `~/.hermes` resolves here too — keeps CLI / Web Dashboard / mgmt-api on the same store |
 | `/opt/hermes/hermes-agent/` | Upstream Hermes git clone (editable uv venv) |
 | `/opt/hermes/Caddyfile` | Caddy config (uses `$DOMAIN` + `$CADDY_TLS` from .env) |
 | `/opt/hermes-mgmt/` | Management API Python package + uv venv |
@@ -51,7 +51,7 @@ All 3 services are grouped under `hermes.target` for atomic start/stop.
 
 1. **`hermes gateway run`** is blocking — use for systemd `Type=simple` ExecStart. Do NOT use `hermes gateway start` (that targets the CLI's own systemd-user service).
 2. **`hermes dashboard`** is the web UI command (NOT `hermes web`). Default `127.0.0.1:9119`. Flag `--insecure` required to bind 0.0.0.0 (but we proxy via Caddy so we never do that).
-3. **`HERMES_HOME`** env var drives all Hermes state — set to `/opt/hermes/.hermes` in every systemd unit.
+3. **`HERMES_HOME`** drives all Hermes state. We leave it unset on the systemd units so it resolves to the CLI default `~/.hermes` (= `/root/.hermes` for `User=root`). That makes `hermes config set` from an SSH session and the Web Dashboard / mgmt-api operate on the same store. Don't add `Environment=HOME=` to gateway/dashboard units — it splits the store.
 4. **Hermes config is YAML** (`config.yaml`), not JSON. `hermes_mgmt.hermes_fs.read_config_yaml` parses it.
 5. **`.env` is the single source of truth** for tokens/domain/keys. All 4 systemd units `EnvironmentFile=/opt/hermes/.env`. After edits, restart affected services.
 6. **Management API auth:** `Authorization: Bearer <HERMES_MGMT_API_KEY>` or session cookie from `POST /api/auth/login`. Constant-time compare via `hmac.compare_digest`.

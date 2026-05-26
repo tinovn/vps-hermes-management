@@ -377,7 +377,11 @@ if [[ ! -f "${INSTALL_DIR}/.env" ]]; then
 # After changes: systemctl restart hermes-gateway hermes-dashboard hermes-mgmt caddy
 
 # --- Core ---
-HERMES_HOME=${INSTALL_DIR}/.hermes
+# HERMES_HOME defaults to \$HOME/.hermes via the Hermes CLI; with our services
+# running as User=root and HOME unset (so systemd defaults HOME=/root), that
+# resolves to /root/.hermes — the same path the bare CLI uses when an admin
+# SSHes in. Don't set HERMES_HOME here unless you want to point services at
+# a different store than interactive CLI.
 HERMES_VPS_VERSION=${APP_VERSION}
 HERMES_DROPLET_IP=${DROPLET_IP}
 DOMAIN=${DOMAIN}
@@ -525,9 +529,12 @@ PartOf=hermes.target
 [Service]
 Type=simple
 User=root
+# Leave HOME unset — systemd defaults it to /root for User=root, matching
+# what `hermes gateway setup` writes if an admin ever runs it interactively.
+# Without this match, the CLI would silently rewrite the unit and split the
+# config store across /root/.hermes and /opt/hermes/.hermes.
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${INSTALL_DIR}/.env
-Environment=HOME=${INSTALL_DIR}
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/local/bin/hermes gateway run
 Restart=always
@@ -552,7 +559,6 @@ Type=simple
 User=root
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${INSTALL_DIR}/.env
-Environment=HOME=${INSTALL_DIR}
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/local/bin/hermes dashboard --no-open --host 127.0.0.1 --port ${DASHBOARD_PORT}
 Restart=always
