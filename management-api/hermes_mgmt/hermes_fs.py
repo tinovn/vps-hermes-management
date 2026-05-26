@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -10,7 +11,12 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-_ALLOWED_LOG_NAMES = frozenset({"agent", "errors", "gateway"})
+# Hermes writes its log files under HERMES_HOME/logs/ (e.g. agent.log,
+# errors.log, gateway.log, gateway-exit-diag.log, gateway-restart.log).
+_LOGS_SUBDIR = "logs"
+# Log name validation: letters, digits, dash, underscore, dot. Disallows `/`
+# and `..` so a caller can't escape the logs dir via path traversal.
+_VALID_LOG_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _POLL_INTERVAL = 0.5  # seconds between polls for follow_log_file
 
 
@@ -29,12 +35,18 @@ def read_config_yaml(hermes_home: Path) -> dict:
 
 
 def tail_log_file(hermes_home: Path, log_name: str, lines: int = 100) -> str:
-    """Return the last N lines of <log_name>.log from HERMES_HOME."""
-    if log_name not in _ALLOWED_LOG_NAMES:
+    """Return the last N lines of <log_name>.log from HERMES_HOME/logs/."""
+    if not _VALID_LOG_NAME_RE.match(log_name) or ".." in log_name:
         raise ValueError(
-            f"Log name '{log_name}' not allowed. Valid: {sorted(_ALLOWED_LOG_NAMES)}"
+            f"Log name '{log_name}' not allowed. Must match [A-Za-z0-9._-]+"
         )
-    log_path = hermes_home / f"{log_name}.log"
+    logs_dir = hermes_home / _LOGS_SUBDIR
+    log_path = logs_dir / f"{log_name}.log"
+    # Defence in depth: ensure the resolved path is inside logs_dir.
+    try:
+        log_path.resolve().relative_to(logs_dir.resolve())
+    except (ValueError, OSError) as exc:
+        raise ValueError(f"Log name '{log_name}' resolves outside logs dir: {exc}")
     if not log_path.exists():
         return ""
     try:
@@ -47,12 +59,13 @@ def tail_log_file(hermes_home: Path, log_name: str, lines: int = 100) -> str:
 
 
 def list_log_files(hermes_home: Path) -> list[dict]:
-    """List all .log files in HERMES_HOME with name, size, and mtime."""
+    """List all .log files in HERMES_HOME/logs/ with name, size, and mtime."""
     result: list[dict] = []
-    if not hermes_home.exists():
+    logs_dir = hermes_home / _LOGS_SUBDIR
+    if not logs_dir.exists():
         return result
     try:
-        for entry in hermes_home.iterdir():
+        for entry in logs_dir.iterdir():
             if entry.suffix == ".log" and entry.is_file():
                 stat = entry.stat()
                 result.append(
@@ -63,7 +76,7 @@ def list_log_files(hermes_home: Path) -> list[dict]:
                     }
                 )
     except Exception as exc:
-        logger.warning("Could not list log files in %s: %s", hermes_home, exc)
+        logger.warning("Could not list log files in %s: %s", logs_dir, exc)
     result.sort(key=lambda x: x["name"])
     return result
 
