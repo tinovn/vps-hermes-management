@@ -5,7 +5,6 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
-from hermes_mgmt.cli_runner import run_hermes
 from hermes_mgmt.config import Settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
 from hermes_mgmt.env_file import delete_env, mask_value, read_env, set_env
@@ -95,36 +94,33 @@ async def set_channel(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Unknown channel '{channel}'. Valid: {sorted(_CHANNEL_MAP)}",
         )
-    # Write to both stores: HERMES_HOME/.env (Dashboard reads this to render
-    # "configured" badges) and /opt/hermes/.env (systemd EnvironmentFile that
-    # the gateway process sees via os.getenv). See env_routes.set_env_key.
-    hermes_env = {"HERMES_HOME": str(settings.hermes_home)}
+    # Write to both .env stores directly:
+    #   - HERMES_HOME/.env  → Dashboard reads this file to render badges
+    #   - /opt/hermes/.env  → systemd EnvironmentFile loaded into the gateway
+    # We bypass `hermes config set` because the CLI only persists *known*
+    # env keys (e.g. TELEGRAM_BOT_TOKEN) into .env; unknown keys like
+    # TELEGRAM_ALLOWED_USERS get routed to config.yaml instead, so the
+    # Gateway never sees them at runtime via os.getenv.
+    hermes_env_file = settings.hermes_home / ".env"
 
-    async def _write_pair(env_key: str, env_val: str) -> None:
-        result = await run_hermes(
-            "config", ["set", env_key, env_val], env_overrides=hermes_env
-        )
-        if result.exit_code != 0:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"hermes config set {env_key} failed: {result.stderr}",
-            )
+    def _write_pair(env_key: str, env_val: str) -> None:
+        set_env(hermes_env_file, env_key, env_val)
         set_env(settings.env_file, env_key, env_val)
 
-    await _write_pair(cfg["primary"], body.token)
+    _write_pair(cfg["primary"], body.token)
 
     # Telegram-specific: store allowed user IDs as comma-separated list.
     # Hermes Gateway reads TELEGRAM_ALLOWED_USERS (comma-separated string)
     # to gate which Telegram accounts can talk to the bot.
     if channel == "telegram" and body.allowed_users is not None:
         joined = ",".join(uid.strip() for uid in body.allowed_users if uid.strip())
-        await _write_pair("TELEGRAM_ALLOWED_USERS", joined)
+        _write_pair("TELEGRAM_ALLOWED_USERS", joined)
 
     if body.extra:
         for env_key, env_val in body.extra.items():
             env_key_upper = env_key.upper()
             if env_key_upper in _ALL_CHANNEL_VARS:
-                await _write_pair(env_key_upper, env_val)
+                _write_pair(env_key_upper, env_val)
             else:
                 logger.warning("Skipping unknown extra env key: %s", env_key)
 
