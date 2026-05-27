@@ -110,14 +110,17 @@ async def set_channel(
 
     _write_pair(cfg["primary"], body.token)
 
-    # Telegram-specific: store allowed user IDs as comma-separated list.
-    # Hermes Gateway reads TELEGRAM_ALLOWED_USERS to gate which Telegram
-    # accounts can talk to the bot. Sentinel "true" means "no restriction —
-    # any user may chat"; an empty/missing allowed_users list maps to that.
+    # Telegram-specific: manage TELEGRAM_ALLOWED_USERS based on body.
+    #   - non-empty list of ids → write comma-joined string
+    #   - None / [] / all-whitespace → remove the key from both .env files
+    #     (Hermes Gateway interprets a missing key as "no restriction")
     if channel == "telegram":
         ids = [uid.strip() for uid in (body.allowed_users or []) if uid.strip()]
-        joined = ",".join(ids) if ids else "true"
-        _write_pair("TELEGRAM_ALLOWED_USERS", joined)
+        if ids:
+            _write_pair("TELEGRAM_ALLOWED_USERS", ",".join(ids))
+        else:
+            delete_env(hermes_env_file, "TELEGRAM_ALLOWED_USERS")
+            delete_env(settings.env_file, "TELEGRAM_ALLOWED_USERS")
 
     if body.extra:
         for env_key, env_val in body.extra.items():
