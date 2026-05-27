@@ -20,7 +20,7 @@ router = APIRouter(tags=["channels"], dependencies=[Depends(require_auth)])
 _CHANNEL_MAP: dict[str, dict] = {
     "telegram": {
         "primary": "TELEGRAM_BOT_TOKEN",
-        "extras": [],
+        "extras": ["TELEGRAM_ALLOWED_USERS"],
     },
     "discord": {
         "primary": "DISCORD_BOT_TOKEN",
@@ -47,6 +47,7 @@ _CHANNEL_MAP: dict[str, dict] = {
 # All vars tracked across all channels for listing
 _ALL_CHANNEL_VARS = {
     "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_ALLOWED_USERS",
     "DISCORD_BOT_TOKEN",
     "SLACK_BOT_TOKEN",
     "SLACK_APP_TOKEN",
@@ -111,6 +112,13 @@ async def set_channel(
         set_env(settings.env_file, env_key, env_val)
 
     await _write_pair(cfg["primary"], body.token)
+
+    # Telegram-specific: store allowed user IDs as comma-separated list.
+    # Hermes Gateway reads TELEGRAM_ALLOWED_USERS (comma-separated string)
+    # to gate which Telegram accounts can talk to the bot.
+    if channel == "telegram" and body.allowed_users is not None:
+        joined = ",".join(uid.strip() for uid in body.allowed_users if uid.strip())
+        await _write_pair("TELEGRAM_ALLOWED_USERS", joined)
 
     if body.extra:
         for env_key, env_val in body.extra.items():

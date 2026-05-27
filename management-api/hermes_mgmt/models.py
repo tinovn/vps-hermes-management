@@ -105,6 +105,9 @@ class DomainRequest(BaseModel):
 class ChannelTokenRequest(BaseModel):
     token: str = Field(min_length=1)
     extra: dict[str, str] | None = None
+    # Telegram-only: comma-joined into TELEGRAM_ALLOWED_USERS by the channels
+    # route. Ignored for other channels.
+    allowed_users: list[str] | None = None
 
 
 class CronAddRequest(BaseModel):
