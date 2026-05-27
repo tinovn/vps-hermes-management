@@ -19,7 +19,7 @@ router = APIRouter(tags=["channels"], dependencies=[Depends(require_auth)])
 _CHANNEL_MAP: dict[str, dict] = {
     "telegram": {
         "primary": "TELEGRAM_BOT_TOKEN",
-        "extras": ["TELEGRAM_ALLOWED_USERS"],
+        "extras": ["TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL"],
     },
     "discord": {
         "primary": "DISCORD_BOT_TOKEN",
@@ -47,6 +47,7 @@ _CHANNEL_MAP: dict[str, dict] = {
 _ALL_CHANNEL_VARS = {
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_ALLOWED_USERS",
+    "TELEGRAM_HOME_CHANNEL",
     "DISCORD_BOT_TOKEN",
     "SLACK_BOT_TOKEN",
     "SLACK_APP_TOKEN",
@@ -110,10 +111,12 @@ async def set_channel(
     _write_pair(cfg["primary"], body.token)
 
     # Telegram-specific: store allowed user IDs as comma-separated list.
-    # Hermes Gateway reads TELEGRAM_ALLOWED_USERS (comma-separated string)
-    # to gate which Telegram accounts can talk to the bot.
-    if channel == "telegram" and body.allowed_users is not None:
-        joined = ",".join(uid.strip() for uid in body.allowed_users if uid.strip())
+    # Hermes Gateway reads TELEGRAM_ALLOWED_USERS to gate which Telegram
+    # accounts can talk to the bot. Sentinel "true" means "no restriction —
+    # any user may chat"; an empty/missing allowed_users list maps to that.
+    if channel == "telegram":
+        ids = [uid.strip() for uid in (body.allowed_users or []) if uid.strip()]
+        joined = ",".join(ids) if ids else "true"
         _write_pair("TELEGRAM_ALLOWED_USERS", joined)
 
     if body.extra:
