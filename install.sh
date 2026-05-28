@@ -13,6 +13,7 @@
 #   --domain     FQDN for Caddy Let's Encrypt (auto-detect from hostname if omitted)
 #   --ref        Hermes git ref (branch/tag/SHA, default: main)
 #   --skip-hermes  Skip Hermes Agent install (useful for mgmt-api-only updates)
+#   --with-rag   Install the local RAG MCP service + register it with Hermes
 # =============================================================================
 
 set -euo pipefail
@@ -25,10 +26,15 @@ readonly HERMES_REPO_URL="https://github.com/NousResearch/hermes-agent.git"
 readonly INSTALL_DIR="/opt/hermes"
 readonly HERMES_SRC_DIR="${INSTALL_DIR}/hermes-agent"
 readonly MGMT_DIR="/opt/hermes-mgmt"
+readonly RAG_DIR="/opt/hermes-rag"
 readonly TEMPLATES_DIR="/etc/hermes/config"
 readonly LOG_FILE="/var/log/hermes-install.log"
 readonly MGMT_API_PORT=9997
 readonly DASHBOARD_PORT=9119
+readonly RAG_PORT=9998
+# Light multilingual embedder (good for Vietnamese + English on a 4GB box).
+# Override per-install with the RAG_EMBED_MODEL env var in /opt/hermes/.env.
+readonly RAG_EMBED_MODEL_DEFAULT="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 readonly HERMES_EXTRAS="web,messaging,cron,voice,mcp,honcho"
 readonly PYTHON_PIN="3.11"
 
@@ -37,12 +43,14 @@ MGMT_API_KEY_ARG=""
 DOMAIN_ARG=""
 HERMES_REF="main"
 SKIP_HERMES=false
+WITH_RAG=false
 while [[ $# -gt 0 ]]; do
   case $1 in
     --mgmt-key)   MGMT_API_KEY_ARG="$2"; shift 2 ;;
     --domain)     DOMAIN_ARG="$2"; shift 2 ;;
     --ref)        HERMES_REF="$2"; shift 2 ;;
     --skip-hermes) SKIP_HERMES=true; shift ;;
+    --with-rag)   WITH_RAG=true; shift ;;
     -h|--help)
       sed -n '3,14p' "$0" | sed 's/^# //' | sed 's/^#$//'
       exit 0 ;;
@@ -278,6 +286,9 @@ step "9. Create install layout"
 mkdir -p "${INSTALL_DIR}" "${INSTALL_DIR}/.hermes" "${INSTALL_DIR}/data"
 mkdir -p "${MGMT_DIR}" "${TEMPLATES_DIR}" "${TEMPLATES_DIR}/channels"
 mkdir -p /var/log/caddy
+if [[ "$WITH_RAG" == "true" ]]; then
+  mkdir -p "${RAG_DIR}" "${RAG_DIR}/data" "${RAG_DIR}/docs"
+fi
 
 # ---- 10. Install Hermes Agent (editable via uv) ---------------------------
 if [[ "$SKIP_HERMES" != "true" ]]; then
@@ -391,6 +402,16 @@ CADDY_TLS=${CADDY_TLS_VALUE}
 HERMES_DASHBOARD_PORT=${DASHBOARD_PORT}
 HERMES_MGMT_PORT=${MGMT_API_PORT}
 
+# --- RAG MCP service (only used when installed with --with-rag) ---
+# Local document retrieval exposed to Hermes over MCP at 127.0.0.1:${RAG_PORT}/mcp.
+RAG_PORT=${RAG_PORT}
+RAG_EMBED_MODEL=${RAG_EMBED_MODEL_DEFAULT}
+RAG_DATA_DIR=${RAG_DIR}/data
+RAG_DOCS_DIR=${RAG_DIR}/docs
+# Higher-quality multilingual alternative (needs ~2GB RAM — also raise
+# MemoryMax in /etc/systemd/system/hermes-rag.service and re-ingest after reset):
+# RAG_EMBED_MODEL=intfloat/multilingual-e5-large
+
 # --- Auth ---
 HERMES_GATEWAY_TOKEN=${GATEWAY_TOKEN}
 HERMES_MGMT_API_KEY=${MGMT_API_KEY}
@@ -424,6 +445,64 @@ else
   log "  MGMT_API_KEY : $([[ -n "$EXISTING_MGMT_API_KEY"   ]] && echo "preserved" || echo "appended")"
   log "  SESSION_SECRET: $([[ -n "$EXISTING_SESSION_SECRET" ]] && echo "preserved" || echo "appended")"
   log "  AUTH_TOKEN   : $([[ -n "$EXISTING_AUTH_TOKEN"     ]] && echo "preserved" || echo "appended")"
+fi
+
+# ---- 12b. Install RAG MCP service (optional, --with-rag) ------------------
+if [[ "$WITH_RAG" == "true" ]]; then
+  step "12b. Install RAG MCP service"
+  cd "${RAG_DIR}"
+  if [[ ! -f "${RAG_DIR}/pyproject.toml" ]]; then
+    log "Downloading rag-mcp sources from ${MGMT_REPO_RAW}"
+    for f in pyproject.toml README.md \
+             hermes_rag/__init__.py hermes_rag/config.py hermes_rag/chunker.py \
+             hermes_rag/embedder.py hermes_rag/store.py hermes_rag/ingest.py \
+             hermes_rag/search.py hermes_rag/mcp_server.py hermes_rag/cli.py; do
+      mkdir -p "$(dirname "${RAG_DIR}/${f}")"
+      curl -fsSL "${MGMT_REPO_RAW}/rag-mcp/${f}" -o "${RAG_DIR}/${f}" \
+        || die "Failed to fetch rag-mcp/${f}"
+    done
+  else
+    log "rag-mcp sources already present, skipping download"
+  fi
+
+  if [[ ! -d "${RAG_DIR}/.venv" ]]; then
+    uv venv --python "$PYTHON_PIN" "${RAG_DIR}/.venv"
+  fi
+  VIRTUAL_ENV="${RAG_DIR}/.venv" uv pip install --python "${RAG_DIR}/.venv/bin/python" \
+    -e "${RAG_DIR}"
+  ln -sf "${RAG_DIR}/.venv/bin/hermes-rag" /usr/local/bin/hermes-rag
+
+  # Pre-warm the embedding model so first boot doesn't block on a download.
+  RAG_MODEL=$(read_env_value RAG_EMBED_MODEL); RAG_MODEL="${RAG_MODEL:-$RAG_EMBED_MODEL_DEFAULT}"
+  RAG_CACHE=$(read_env_value RAG_MODEL_CACHE);  RAG_CACHE="${RAG_CACHE:-${RAG_DIR}/models}"
+  mkdir -p "${RAG_CACHE}"
+  log "Pre-warming embedding model '${RAG_MODEL}' (first download may take a minute)"
+  RAG_EMBED_MODEL="${RAG_MODEL}" RAG_MODEL_CACHE="${RAG_CACHE}" \
+    "${RAG_DIR}/.venv/bin/python" -c \
+    "from hermes_rag.embedder import build_embedder; build_embedder('${RAG_MODEL}', False, cache_dir='${RAG_CACHE}'); print('model cached')" \
+    || log "WARN: model pre-warm failed (will retry on service start)"
+
+  # Register the RAG MCP server in Hermes config.yaml (idempotent). Hermes
+  # auto-reloads its mcp_servers section when config.yaml changes.
+  HERMES_CONFIG="/root/.hermes/config.yaml"
+  RAG_PORT="${RAG_PORT}" HERMES_CONFIG="${HERMES_CONFIG}" \
+    "${MGMT_DIR}/.venv/bin/python" - <<'PYEOF' || log "WARN: could not register RAG MCP in config.yaml"
+import os, pathlib, yaml
+cfg_path = pathlib.Path(os.environ["HERMES_CONFIG"])
+cfg = {}
+if cfg_path.exists():
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+servers = cfg.setdefault("mcp_servers", {})
+servers["rag"] = {
+    "url": f"http://127.0.0.1:{os.environ['RAG_PORT']}/mcp",
+    "timeout": 180,
+    "connect_timeout": 30,
+}
+cfg_path.parent.mkdir(parents=True, exist_ok=True)
+cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
+print(f"Registered mcp_servers.rag -> {servers['rag']['url']}")
+PYEOF
+  log "RAG MCP registered in ${HERMES_CONFIG}"
 fi
 
 # ---- 13. Seed config templates -------------------------------------------
@@ -597,6 +676,32 @@ MemoryMax=512M
 WantedBy=multi-user.target
 EOF
 
+if [[ "$WITH_RAG" == "true" ]]; then
+cat > /etc/systemd/system/hermes-rag.service <<EOF
+[Unit]
+Description=Hermes Agent — RAG MCP service (local retrieval)
+After=network-online.target
+Wants=network-online.target
+PartOf=hermes.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${RAG_DIR}
+EnvironmentFile=${INSTALL_DIR}/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=${RAG_DIR}/.venv/bin/hermes-rag serve
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+MemoryMax=1536M
+
+[Install]
+WantedBy=hermes.target
+EOF
+fi
+
 # Caddy override — use our Caddyfile + .env
 mkdir -p /etc/systemd/system/caddy.service.d
 cat > /etc/systemd/system/caddy.service.d/override.conf <<EOF
@@ -613,6 +718,10 @@ step "16. Enable + start services"
 systemctl enable hermes.target hermes-gateway.service hermes-dashboard.service hermes-mgmt.service caddy.service fail2ban.service
 systemctl restart caddy.service
 systemctl start hermes-mgmt.service
+if [[ "$WITH_RAG" == "true" ]]; then
+  systemctl enable hermes-rag.service
+  systemctl start hermes-rag.service || log "WARN: hermes-rag start failed (check 'journalctl -u hermes-rag')"
+fi
 # Gateway + dashboard only start if Hermes was installed (may lack config)
 if [[ "$SKIP_HERMES" != "true" ]]; then
   systemctl start hermes-dashboard.service || log "WARN: dashboard start failed (config pending)"
@@ -658,6 +767,7 @@ log "    hermes-mgmt       : $(svc_status hermes-mgmt.service)"
 log "    hermes-gateway    : $(svc_status hermes-gateway.service)"
 log "    hermes-dashboard  : $(svc_status hermes-dashboard.service)"
 log "    fail2ban          : $(svc_status fail2ban.service)"
+[[ "$WITH_RAG" == "true" ]] && log "    hermes-rag        : $(svc_status hermes-rag.service)"
 log ""
 log "  Dashboard URL (first visit, sets a 30d cookie then strips token):"
 log "    ${SCHEME}://${DOMAIN}/?token=${AUTH_TOKEN}"
@@ -675,6 +785,13 @@ log "    hermes model                     # pick provider + model"
 log "    hermes config show               # verify config"
 log "    systemctl status hermes-gateway  # inspect services"
 log "    journalctl -u hermes-gateway -f  # follow logs"
+if [[ "$WITH_RAG" == "true" ]]; then
+log ""
+log "  RAG knowledge base (MCP tool 'rag_search' available in Hermes chat):"
+log "    cp your-docs/* ${RAG_DIR}/docs/   # add md/txt/pdf"
+log "    hermes-rag ingest                 # index them"
+log "    hermes-rag stats                  # verify"
+fi
 log ""
 log "  Quick health check:"
 log "    curl -H 'Authorization: Bearer ${MGMT_API_KEY}' \\"
