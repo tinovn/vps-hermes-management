@@ -484,17 +484,19 @@ if [[ "$WITH_RAG" == "true" ]]; then
 
   # Register the RAG MCP server in Hermes config.yaml (idempotent). Hermes
   # auto-reloads its mcp_servers section when config.yaml changes.
-  HERMES_CONFIG="/root/.hermes/config.yaml"
-  RAG_PORT="${RAG_PORT}" HERMES_CONFIG="${HERMES_CONFIG}" \
+  # Note: pass the port under a fresh name — RAG_PORT is a readonly constant and
+  # using it as a command-prefix assignment would abort the script.
+  RAG_CONFIG_FILE="/root/.hermes/config.yaml"
+  RAG_MCP_PORT="${RAG_PORT}" RAG_CONFIG_FILE="${RAG_CONFIG_FILE}" \
     "${MGMT_DIR}/.venv/bin/python" - <<'PYEOF' || log "WARN: could not register RAG MCP in config.yaml"
 import os, pathlib, yaml
-cfg_path = pathlib.Path(os.environ["HERMES_CONFIG"])
+cfg_path = pathlib.Path(os.environ["RAG_CONFIG_FILE"])
 cfg = {}
 if cfg_path.exists():
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
 servers = cfg.setdefault("mcp_servers", {})
 servers["rag"] = {
-    "url": f"http://127.0.0.1:{os.environ['RAG_PORT']}/mcp",
+    "url": f"http://127.0.0.1:{os.environ['RAG_MCP_PORT']}/mcp",
     "timeout": 180,
     "connect_timeout": 30,
 }
@@ -502,7 +504,7 @@ cfg_path.parent.mkdir(parents=True, exist_ok=True)
 cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
 print(f"Registered mcp_servers.rag -> {servers['rag']['url']}")
 PYEOF
-  log "RAG MCP registered in ${HERMES_CONFIG}"
+  log "RAG MCP registered in ${RAG_CONFIG_FILE}"
 fi
 
 # ---- 13. Seed config templates -------------------------------------------
