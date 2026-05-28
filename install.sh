@@ -43,7 +43,7 @@ MGMT_API_KEY_ARG=""
 DOMAIN_ARG=""
 HERMES_REF="main"
 SKIP_HERMES=false
-WITH_RAG=false
+WITH_RAG=true
 while [[ $# -gt 0 ]]; do
   case $1 in
     --mgmt-key)   MGMT_API_KEY_ARG="$2"; shift 2 ;;
