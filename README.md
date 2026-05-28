@@ -41,6 +41,36 @@ and 302-redirect to `/` so the token never lands in browser history.
 Subsequent visits to `https://<HOSTNAME>/` are auto-authenticated by
 cookie. Visitors without the token receive `403 Forbidden`.
 
+## RAG knowledge base (optional)
+
+Give Hermes retrieval over **your own documents**. Install with the `--with-rag`
+flag to add a 4th service (`hermes-rag`) that ingests local files and exposes an
+MCP `rag_search` tool the agent calls during chat:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tinovn/vps-hermes-management/main/install.sh | \
+  bash -s -- --with-rag
+```
+
+Then load your documents and index them:
+
+```bash
+cp ~/my-docs/*.{md,txt,pdf} /opt/hermes-rag/docs/
+hermes-rag ingest        # chunk + embed + store
+hermes-rag stats         # documents / chunks / model
+hermes-rag search "câu hỏi của bạn"   # one-off test query
+```
+
+- **Embeddings run locally** via fastembed (CPU, no API key, offline). Default
+  model is multilingual and works well for Vietnamese. DeepSeek/your chat model
+  is unaffected — it still does the answering; RAG only does retrieval.
+- **No native deps**: plain SQLite + numpy cosine. Good to ~tens of thousands of
+  chunks; see [rag-mcp/README.md](rag-mcp/README.md) for tuning and the larger
+  `multilingual-e5-large` model option.
+- Port `9998` is **loopback-only** (not opened in UFW); Hermes connects over
+  localhost and auto-reloads the `mcp_servers.rag` entry the installer adds to
+  `config.yaml`.
+
 ## Architecture
 
 ```

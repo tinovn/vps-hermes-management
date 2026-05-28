@@ -30,6 +30,26 @@ Internet :80/:443
 
 All 3 services are grouped under `hermes.target` for atomic start/stop.
 
+### Optional 4th service: RAG MCP (`install.sh --with-rag`)
+
+```
+┌──────────────────────────┐
+│ hermes-rag.service       │  Local RAG retrieval, opt-in via install --with-rag
+│ `hermes-rag serve`       │  FastMCP StreamableHTTP on 127.0.0.1:9998/mcp
+│ :9998 (loopback only)    │  Hermes consumes it via config.yaml mcp_servers.rag
+└──────────────────────────┘
+```
+
+- Python package `rag-mcp/hermes_rag/`, installed to `/opt/hermes-rag/` (own uv venv).
+- Embeds locally with **fastembed** (CPU, no API key); default model
+  `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (multilingual,
+  good for Vietnamese). Generation stays in Hermes — this service only retrieves.
+- Vector store is **plain SQLite + numpy brute-force cosine** (no native
+  extension). Good to ~tens of thousands of chunks.
+- Exposes MCP tools `rag_search(query, top_k)` and `rag_stats()`.
+- Port 9998 is **loopback-only** → no UFW rule (more secure than 9997).
+- `WantedBy=hermes.target` so it starts/stops with the target when enabled.
+
 ## Paths
 
 | Path | Purpose |
@@ -40,6 +60,7 @@ All 3 services are grouped under `hermes.target` for atomic start/stop.
 | `/opt/hermes/hermes-agent/` | Upstream Hermes git clone (editable uv venv) |
 | `/opt/hermes/Caddyfile` | Caddy config (uses `$DOMAIN` + `$CADDY_TLS` from .env) |
 | `/opt/hermes-mgmt/` | Management API Python package + uv venv |
+| `/opt/hermes-rag/` | RAG MCP service (opt-in): `hermes_rag/` package + uv venv, `data/rag.db`, `docs/` (ingest source), `models/` (fastembed cache) |
 | `/etc/hermes/config/` | Read-only provider/channel JSON templates |
 | `/etc/systemd/system/hermes.target` | Meta-target grouping 3 units |
 | `/etc/systemd/system/hermes-*.service` | Unit files for each service |
@@ -107,9 +128,36 @@ hermes_mgmt/
 
 Response envelope: `ApiResponse(ok: bool, data: Any | None, error: str | None)`.
 
+## RAG MCP service (`rag-mcp/`, opt-in)
+
+```
+rag-mcp/hermes_rag/
+├── config.py      Settings from RAG_* env vars (model, paths, ports, chunking)
+├── chunker.py     Recursive, structure-aware chunking with overlap
+├── embedder.py    fastembed wrapper (+ HashEmbedder stub for tests) — L2-normalized
+├── store.py       SQLite (embedding BLOBs) + numpy cosine search, model-mismatch guard
+├── ingest.py      md/txt/pdf loaders, content-hash dedup, idempotent upsert
+├── search.py      Retriever: embed query → top-k → citation-formatted context
+├── mcp_server.py  FastMCP StreamableHTTP server, tools rag_search / rag_stats
+└── cli.py         hermes-rag {ingest,search,stats,reset,serve}
+```
+
+- Install: `install.sh --with-rag` → fetch sources to `/opt/hermes-rag`, uv venv,
+  pre-warm the embed model, write `hermes-rag.service`, and merge
+  `mcp_servers.rag` into `/root/.hermes/config.yaml` (Hermes auto-reloads it).
+- Embeddings are **local only** (DeepSeek has no embeddings API). Generation is
+  unaffected — Hermes still uses whatever chat provider is configured.
+- Operate: drop docs in `/opt/hermes-rag/docs/`, run `hermes-rag ingest`, verify
+  with `hermes-rag stats`. After a re-ingest the running server reloads its
+  matrix on the next query (cache keyed on chunk count).
+- Changing `RAG_EMBED_MODEL` requires `hermes-rag reset` + re-ingest (store
+  refuses to mix vectors from different models).
+- Tests: `rag-mcp/tests/` (pytest) use `HashEmbedder` so they run with no model
+  download — no fastembed/mcp import needed on the test path.
+
 ## Security posture
 
-- UFW: 22 (limit), 80, 443, 9997 allowed; all else denied
+- UFW: 22 (limit), 80, 443, 9997 allowed; all else denied (RAG's 9998 is loopback-only, intentionally not opened)
 - Tokens: 64-char hex via `openssl rand -hex 32`
 - bcrypt cost 12 for password hashing
 - Rate limit: 10 failures / 15 min / IP → 429
