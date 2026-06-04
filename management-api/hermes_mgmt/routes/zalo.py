@@ -49,10 +49,27 @@ _DEFAULT_SIDECAR_PORT = 3838
 # Short timeout: the sidecar is local. /login/qr returns immediately (QR is
 # generated async and fetched separately via /qr.png).
 _SIDECAR_TIMEOUT = 8.0
-# Plugin location + registry key (dir-based, see Hermes hermes_cli/plugins.py).
+# Plugin location. For a flat plugin the registry key Hermes matches against
+# plugins.enabled is the `name:` from plugin.yaml (zalo-personal-platform), NOT
+# the directory name — see hermes_cli/plugins.py `key = prefix/dir if prefix
+# else name`. We read it from the manifest so we always enable the right key.
 _PLUGIN_DIR = Path("/root/.hermes/plugins/zalo-personal")
-_PLUGIN_KEY = "zalo-personal"
+_PLUGIN_FALLBACK_KEY = "zalo-personal-platform"
 _HERMES_BIN = "/usr/local/bin/hermes"
+
+
+def _plugin_key() -> str:
+    """Registry key = `name:` in plugin.yaml (falls back to a known default)."""
+    manifest = _PLUGIN_DIR / "plugin.yaml"
+    try:
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            if line.startswith("name:"):
+                val = line.split(":", 1)[1].strip()
+                if val:
+                    return val
+    except OSError:
+        pass
+    return _PLUGIN_FALLBACK_KEY
 
 
 def _port_open(port: int) -> bool:
@@ -138,8 +155,9 @@ def _enable_plugin_in_config(settings: Settings) -> None:
     enabled = plugins.get("enabled")
     if not isinstance(enabled, list):
         enabled = []
-    if _PLUGIN_KEY not in enabled:
-        enabled.append(_PLUGIN_KEY)
+    key = _plugin_key()
+    if key not in enabled:
+        enabled.append(key)
     plugins["enabled"] = enabled
     plugins.setdefault("disabled", [])
     data["plugins"] = plugins

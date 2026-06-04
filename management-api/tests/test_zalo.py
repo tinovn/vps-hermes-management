@@ -164,32 +164,34 @@ def test_zalo_qr_not_ready(client: TestClient, auth_headers: dict) -> None:
 
 
 def test_enable_plugin_in_config_adds_key(test_settings: Settings) -> None:
-    from hermes_mgmt.routes.zalo import _PLUGIN_KEY, _enable_plugin_in_config
+    from hermes_mgmt.routes.zalo import _enable_plugin_in_config
 
     cfg = test_settings.hermes_home / "config.yaml"
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text("plugins:\n  enabled: []\n", encoding="utf-8")
-    _enable_plugin_in_config(test_settings)
+    with patch("hermes_mgmt.routes.zalo._plugin_key", return_value="zalo-personal-platform"):
+        _enable_plugin_in_config(test_settings)
     import yaml
 
     data = yaml.safe_load(cfg.read_text())
-    assert _PLUGIN_KEY in data["plugins"]["enabled"]
+    assert "zalo-personal-platform" in data["plugins"]["enabled"]
 
 
 def test_enable_plugin_in_config_idempotent_and_no_section(
     test_settings: Settings,
 ) -> None:
-    from hermes_mgmt.routes.zalo import _PLUGIN_KEY, _enable_plugin_in_config
+    from hermes_mgmt.routes.zalo import _enable_plugin_in_config
 
     cfg = test_settings.hermes_home / "config.yaml"
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text("model: gpt-4o\n", encoding="utf-8")  # no plugins section
-    _enable_plugin_in_config(test_settings)
-    _enable_plugin_in_config(test_settings)  # second call must not duplicate
+    with patch("hermes_mgmt.routes.zalo._plugin_key", return_value="zalo-personal-platform"):
+        _enable_plugin_in_config(test_settings)
+        _enable_plugin_in_config(test_settings)  # second call must not duplicate
     import yaml
 
     data = yaml.safe_load(cfg.read_text())
-    assert data["plugins"]["enabled"].count(_PLUGIN_KEY) == 1
+    assert data["plugins"]["enabled"].count("zalo-personal-platform") == 1
     assert data["model"] == "gpt-4o"  # preserved other keys
 
 

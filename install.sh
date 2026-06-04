@@ -393,8 +393,9 @@ if [[ "$WITH_ZALO" == "true" && "$SKIP_HERMES" != "true" ]]; then
 
     # Hermes discovers plugins in the dir but ships them DISABLED — must enable
     # explicitly or the gateway never loads the adapter ("No messaging platforms
-    # enabled"). Plugin name = `name:` in plugin.yaml (zalo-personal-platform),
-    # which can differ from the dir name. Parse it so we enable the right one.
+    # enabled"). For a FLAT plugin (no category prefix) the registry key is the
+    # `name:` field from plugin.yaml (zalo-personal-platform), NOT the directory
+    # name — see hermes_cli/plugins.py: `key = prefix/dir if prefix else name`.
     ZALO_PLUGIN_ID="$(grep -E '^name:' "${ZALO_PLUGIN_DIR}/plugin.yaml" 2>/dev/null | head -1 | cut -d: -f2 | xargs)"
     ZALO_PLUGIN_ID="${ZALO_PLUGIN_ID:-${ZALO_PLUGIN_NAME}}"
     log "Enabling Hermes plugin '${ZALO_PLUGIN_ID}'..."
