@@ -352,10 +352,23 @@ if [[ ! -d .git ]]; then
              hermes_mgmt/routes/logs.py hermes_mgmt/routes/auth_routes.py \
              hermes_mgmt/routes/env_routes.py hermes_mgmt/routes/cli_routes.py \
              hermes_mgmt/routes/zalo.py hermes_mgmt/routes/openviking.py \
-             hermes_mgmt/routes/codex.py; do
+             hermes_mgmt/routes/codex.py hermes_mgmt/routes/roles.py; do
       mkdir -p "$(dirname "${MGMT_DIR}/${f}")"
       curl -fsSL "${MGMT_REPO_RAW}/management-api/${f}" -o "${MGMT_DIR}/${f}" \
         || die "Failed to fetch ${f}"
+    done
+
+    # Role/rule policy config (the roles API reads config/rules/*.md +
+    # config/roles/*.yaml from /opt/hermes-mgmt/config).
+    for cf in rules/a-identity.md rules/b-account-safety.md \
+              rules/c-anti-spam-content.md rules/d-security-privacy.md \
+              rules/e-marketing-sales.md rules/f-conversation-quality.md \
+              rules/g-tools-actions.md rules/h-operations-escalation.md \
+              roles/cskh.yaml roles/sales.yaml roles/marketing.yaml \
+              roles/receptionist.yaml; do
+      mkdir -p "$(dirname "${MGMT_DIR}/config/${cf}")"
+      curl -fsSL "${MGMT_REPO_RAW}/config/${cf}" -o "${MGMT_DIR}/config/${cf}" \
+        || log "WARN: could not fetch config/${cf} (roles API may be limited)"
     done
   fi
 fi

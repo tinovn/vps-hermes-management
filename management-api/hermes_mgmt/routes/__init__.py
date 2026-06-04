@@ -12,6 +12,7 @@ from hermes_mgmt.routes.cron_routes import router as cron_router
 from hermes_mgmt.routes.env_routes import router as env_router
 from hermes_mgmt.routes.logs import router as logs_router
 from hermes_mgmt.routes.openviking import router as openviking_router
+from hermes_mgmt.routes.roles import router as roles_router
 from hermes_mgmt.routes.status import router as status_router
 from hermes_mgmt.routes.zalo import router as zalo_router
 
@@ -28,4 +29,5 @@ all_routers: list[APIRouter] = [
     zalo_router,
     openviking_router,
     codex_router,
+    roles_router,
 ]

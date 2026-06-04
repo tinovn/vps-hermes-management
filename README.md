@@ -8,7 +8,7 @@ Inspired by the OpenClaw deployment pattern, rewritten around Hermes's Python st
 
 - **One-command install** — `curl … | bash` sets up Hermes + dashboard + mgmt API in ~3 min
 - **No Docker** — runs directly on the OS via systemd, saves 200-500 MB RAM
-- **FastAPI Management API** — 61 endpoints for status/config/channels/cron/logs/CLI/Zalo/OpenViking/Codex (smoke-tested 34/34 PASS, see [#api-test-results](#api-test-results))
+- **FastAPI Management API** — 69 endpoints for status/config/channels/cron/logs/CLI/Zalo/OpenViking/Codex/Roles (smoke-tested 34/34 PASS, see [#api-test-results](#api-test-results))
 - **15 provider templates** — Anthropic, OpenAI, Google, xAI, DeepSeek, Groq, Mistral, Together, Nous Portal, OpenRouter, HuggingFace, Kimi, MiMo, MiniMax, z.ai
 - **6 messaging channels** — Telegram, Discord, Slack, Signal, WhatsApp, Email
 - **Auto SSL** — Let's Encrypt via Caddy, self-signed fallback when DNS isn't ready
@@ -203,7 +203,7 @@ Every JSON response uses the same shape:
 
 Validation errors return FastAPI's standard `422` with `{ "detail": [...] }`.
 
-### Endpoint catalog (61 routes)
+### Endpoint catalog (69 routes)
 
 #### 1) Health & info (public + bearer)
 
@@ -515,6 +515,55 @@ curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" \
 curl -s -H "Authorization: Bearer $MGMT_KEY" \
   http://localhost:9997/api/codex/auth/status
 # { "ok": true, "data": {"status": "connected", "model_set": true}, "error": null }
+```
+
+#### 13) Agent roles & rule policies (8)
+
+Give the agent a **role** (CSKH, sales, marketing, receptionist, or a custom
+one) from the dashboard. Each role = persona + tone + a set of **rule groups**.
+Rule groups are markdown files (`config/rules/*.md`, 8 groups A–H); roles are
+yaml (`config/roles/*.yaml` preset, `HERMES_HOME/roles/*.yaml` custom). Applying
+a role assembles a system prompt (persona + every enabled rule body), writes it
+to `HERMES_HOME/persona.md`, records `active_role.json`, and restarts the gateway.
+
+Rule groups (toggled per role): `a-identity`, `b-account-safety`,
+`c-anti-spam-content`, `d-security-privacy`, `e-marketing-sales`,
+`f-conversation-quality`, `g-tools-actions`, `h-operations-escalation`.
+
+| Method | Path | Body | Description |
+|---|---|---|---|
+| GET | `/api/rules` | — | List all rule groups (`id`, `title`, full markdown `body`) |
+| GET | `/api/rules/{group_id}` | — | One rule group's markdown |
+| GET | `/api/roles` | — | List roles (preset + custom) + the active role id |
+| GET | `/api/roles/active` | — | Currently applied role (`id`, `rules`, `applied_at`) |
+| GET | `/api/roles/{role_id}` | — | Role detail (persona, tone, rules, source) |
+| POST | `/api/roles` | `{id, label?, description?, emoji?, tone?, persona, rules:[group_id...]}` | Create/update a **custom** role. Unknown rule ids are dropped; cannot shadow a preset id |
+| DELETE | `/api/roles/{role_id}` | — | Delete a custom role (presets are read-only → 403) |
+| POST | `/api/roles/{role_id}/apply` | — | Build persona + rules → write `persona.md` → restart gateway. Returns `persona_preview` |
+
+Dashboard flow:
+
+```
+GET /api/roles                       → render role cards (active highlighted)
+GET /api/rules                        → render the 8 rule-group toggles
+[Tạo role]   → POST /api/roles {id, persona, rules:[...]}
+[Áp dụng]    → POST /api/roles/{id}/apply   → bot adopts the role
+```
+
+```bash
+# List roles + rule groups (for the GUI)
+curl -s -H "Authorization: Bearer $MGMT_KEY" http://localhost:9997/api/roles
+curl -s -H "Authorization: Bearer $MGMT_KEY" http://localhost:9997/api/rules
+
+# Create a custom role picking which rule groups to enforce
+curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" -H "Content-Type: application/json" \
+  -d '{"id":"spa","label":"Lễ tân Spa","persona":"Bạn là lễ tân spa...",
+       "rules":["a-identity","d-security-privacy","f-conversation-quality"]}' \
+  http://localhost:9997/api/roles
+
+# Apply it (assembles persona+rules, restarts gateway)
+curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" \
+  http://localhost:9997/api/roles/spa/apply
 ```
 
 ### API test results
