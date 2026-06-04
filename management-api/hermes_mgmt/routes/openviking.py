@@ -9,9 +9,13 @@ URL at call time (same pattern as /api/upgrade-mgmt).
 Lifecycle (dashboard drives this top-to-bottom):
   status     → is it installed? service active? healthy? wired into Hermes?
   install    → run install-openviking.sh (venv + pip + config + systemd unit)
-  config     → write embedding + VLM keys into ~/.openviking/ov.conf
+  config     → GET current (masked) / PUT embedding + VLM keys into ov.conf
+  test-key   → validate an LLM key against the provider before saving
   enable     → start service + set OPENVIKING_ENDPOINT in .env + restart gateway
   disable    → stop service + remove OPENVIKING_ENDPOINT + restart gateway
+  restart    → restart the OpenViking service
+  upgrade    → pip install --upgrade openviking + restart
+  stats      → memory/data-dir/uptime summary
   uninstall  → run uninstall-openviking.sh
   logs       → journal tail of hermes-openviking.service
 """
@@ -29,17 +33,27 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, st
 
 from hermes_mgmt.config import Settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
-from hermes_mgmt.env_file import delete_env, read_env, set_env
+from hermes_mgmt.env_file import delete_env, mask_value, read_env, set_env
 from hermes_mgmt.models import ApiResponse
-from hermes_mgmt.systemd_ctl import is_active, journal_tail, restart, start, stop
+from hermes_mgmt.systemd_ctl import (
+    active_since,
+    is_active,
+    journal_tail,
+    restart,
+    start,
+    stop,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["openviking"], dependencies=[Depends(require_auth)])
 
 _SERVICE = "hermes-openviking"
-_OV_BIN = "/opt/hermes-openviking/.venv/bin/openviking-server"
-_OV_CONF = Path("/root/.openviking/ov.conf")
+_OV_DIR = "/opt/hermes-openviking"
+_OV_BIN = f"{_OV_DIR}/.venv/bin/openviking-server"
+_OV_VENV_UV = f"{_OV_DIR}/.venv/bin/uv"
+_OV_HOME = Path("/root/.openviking")
+_OV_CONF = _OV_HOME / "ov.conf"
 _OV_PORT = 1933
 _OV_ENDPOINT = f"http://127.0.0.1:{_OV_PORT}"
 _ENDPOINT_ENV_KEY = "OPENVIKING_ENDPOINT"
@@ -351,3 +365,192 @@ async def ov_logs(
         )
     text = await journal_tail(_SERVICE, lines=lines, allowed=settings.allowed_services)
     return ApiResponse(ok=True, data={"service": _SERVICE, "logs": text})
+
+
+# ─── config (read) ───────────────────────────────────────────────────────────
+
+
+@router.get("/api/openviking/config", response_model=ApiResponse)
+async def ov_get_config() -> ApiResponse:
+    """Return the current ov.conf with api_key values masked (sk-****<last4>)."""
+    if not _OV_CONF.exists():
+        return ApiResponse(ok=True, data={"configured": False})
+    try:
+        conf = json.loads(_OV_CONF.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"ov.conf không đọc được: {exc}",
+        )
+    emb = conf.get("embedding", {}).get("dense", {})
+    vlm = conf.get("vlm", {})
+    return ApiResponse(
+        ok=True,
+        data={
+            "configured": True,
+            "embedding": {
+                "api_base": emb.get("api_base"),
+                "provider": emb.get("provider"),
+                "model": emb.get("model"),
+                "dimension": emb.get("dimension"),
+                "api_key": mask_value("api_key", emb.get("api_key", "")),
+            },
+            "vlm": {
+                "api_base": vlm.get("api_base"),
+                "provider": vlm.get("provider"),
+                "model": vlm.get("model"),
+                "api_key": mask_value("api_key", vlm.get("api_key", "")),
+            },
+        },
+    )
+
+
+# ─── test-key ────────────────────────────────────────────────────────────────
+
+
+@router.post("/api/openviking/test-key", response_model=ApiResponse)
+async def ov_test_key(body: dict = Body(...)) -> ApiResponse:
+    """Validate an LLM key by listing models at the provider before saving.
+
+    Body: { "api_key", "api_base"? }. Hits GET <api_base>/models with the key —
+    same cheap check /api/config/test-key uses for chat providers.
+    """
+    api_key = (body.get("api_key") or "").strip()
+    api_base = (body.get("api_base") or "https://api.openai.com/v1").strip().rstrip("/")
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Thiếu api_key."
+        )
+    url = f"{api_base}/models"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.RequestError as exc:
+        return ApiResponse(ok=False, error=f"Không gọi được {url}: {exc}")
+    if resp.status_code == 200:
+        return ApiResponse(ok=True, data={"valid": True})
+    return ApiResponse(
+        ok=False,
+        data={"valid": False, "http_status": resp.status_code},
+        error=f"Provider trả HTTP {resp.status_code} — key có thể sai.",
+    )
+
+
+# ─── restart ─────────────────────────────────────────────────────────────────
+
+
+@router.post("/api/openviking/restart", response_model=ApiResponse)
+async def ov_restart(
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> ApiResponse:
+    """Restart the OpenViking service (recover from a hung server)."""
+    if not _is_installed():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="OpenViking chưa được cài."
+        )
+    code, msg = await restart(_SERVICE, settings.allowed_services)
+    if code != 0:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Restart {_SERVICE} lỗi: {msg}",
+        )
+    return ApiResponse(ok=True, data={"restarted": True})
+
+
+# ─── upgrade ─────────────────────────────────────────────────────────────────
+
+
+async def _do_upgrade(settings: Settings) -> None:
+    uv = _OV_VENV_UV if Path(_OV_VENV_UV).exists() else "uv"
+    proc = await asyncio.create_subprocess_exec(
+        uv, "pip", "install", "--python", f"{_OV_DIR}/.venv/bin/python",
+        "--upgrade", "openviking",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+    )
+    out, _ = await proc.communicate()
+    if proc.returncode != 0:
+        logger.error("OpenViking upgrade failed:\n%s", out.decode(errors="replace")[-2000:])
+        return
+    logger.info("OpenViking upgraded; restarting service")
+    try:
+        await restart(_SERVICE, settings.allowed_services)
+    except Exception as exc:
+        logger.error("restart after OpenViking upgrade failed: %s", exc)
+
+
+@router.post(
+    "/api/openviking/upgrade",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=ApiResponse,
+)
+async def ov_upgrade(
+    background_tasks: BackgroundTasks,
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> ApiResponse:
+    """pip install --upgrade openviking (background) + restart the service."""
+    if not _is_installed():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="OpenViking chưa được cài."
+        )
+    background_tasks.add_task(_do_upgrade, settings)
+    return ApiResponse(ok=True, data={"message": "Đang nâng cấp OpenViking ở chế độ nền."})
+
+
+# ─── stats ───────────────────────────────────────────────────────────────────
+
+
+def _dir_size_bytes(path: Path) -> int:
+    """Total size of a directory tree in bytes (0 if missing)."""
+    if not path.exists():
+        return 0
+    total = 0
+    for p in path.rglob("*"):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+@router.get("/api/openviking/stats", response_model=ApiResponse)
+async def ov_stats(
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> ApiResponse:
+    """Memory/data-dir/uptime summary for the dashboard.
+
+    Pulls live counts from the server's API when reachable; always reports the
+    on-disk data size + service uptime so the panel shows something useful even
+    when the server is down.
+    """
+    if not _is_installed():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="OpenViking chưa được cài."
+        )
+    active = await is_active(_SERVICE, settings.allowed_services)
+    since = await active_since(_SERVICE, settings.allowed_services) if active else None
+    data_bytes = _dir_size_bytes(_OV_HOME)
+
+    # Best-effort live stats from the server (endpoint may not exist on all
+    # versions — treat any failure as "unavailable", don't error the request).
+    server_stats = None
+    if active:
+        try:
+            async with httpx.AsyncClient(timeout=_HEALTH_TIMEOUT) as client:
+                resp = await client.get(f"{_OV_ENDPOINT}/stats")
+            if resp.status_code == 200:
+                server_stats = resp.json()
+        except (httpx.RequestError, json.JSONDecodeError):
+            server_stats = None
+
+    return ApiResponse(
+        ok=True,
+        data={
+            "service_active": active,
+            "active_since": since,
+            "data_dir": str(_OV_HOME),
+            "data_size_bytes": data_bytes,
+            "data_size_mb": round(data_bytes / (1024 * 1024), 2),
+            "server_stats": server_stats,
+        },
+    )

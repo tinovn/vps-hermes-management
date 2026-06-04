@@ -8,7 +8,7 @@ Inspired by the OpenClaw deployment pattern, rewritten around Hermes's Python st
 
 - **One-command install** — `curl … | bash` sets up Hermes + dashboard + mgmt API in ~3 min
 - **No Docker** — runs directly on the OS via systemd, saves 200-500 MB RAM
-- **FastAPI Management API** — 46 endpoints for status/config/channels/cron/logs/CLI/Zalo (smoke-tested 34/34 PASS, see [#api-test-results](#api-test-results))
+- **FastAPI Management API** — 58 endpoints for status/config/channels/cron/logs/CLI/Zalo/OpenViking (smoke-tested 34/34 PASS, see [#api-test-results](#api-test-results))
 - **15 provider templates** — Anthropic, OpenAI, Google, xAI, DeepSeek, Groq, Mistral, Together, Nous Portal, OpenRouter, HuggingFace, Kimi, MiMo, MiniMax, z.ai
 - **6 messaging channels** — Telegram, Discord, Slack, Signal, WhatsApp, Email
 - **Auto SSL** — Let's Encrypt via Caddy, self-signed fallback when DNS isn't ready
@@ -203,7 +203,7 @@ Every JSON response uses the same shape:
 
 Validation errors return FastAPI's standard `422` with `{ "detail": [...] }`.
 
-### Endpoint catalog (46 routes)
+### Endpoint catalog (58 routes)
 
 #### 1) Health & info (public + bearer)
 
@@ -372,19 +372,28 @@ curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" -H "Content-Type: applicati
 
 #### 10) Zalo personal connect (4)
 
-The Zalo plugin ships a Node.js sidecar (zca-js) the gateway spawns on
-`127.0.0.1:3838` — **unreachable from outside the VPS**. These routes proxy the
-sidecar through the Management API so a low-tech user connects Zalo entirely
-from the dashboard: **click connect → scan the QR shown on the page → done**.
-No SSH, no `curl`, no hunting for a Zalo UID (the owner UID is auto-saved to
-`.env` on successful connect).
+The Zalo plugin ships a Node.js sidecar (zca-js) bound to `127.0.0.1:3838` —
+**unreachable from outside the VPS**. These routes proxy it through the
+Management API so a low-tech user connects Zalo entirely from the dashboard:
+**click connect → scan the QR shown on the page → done**. No SSH, no `curl`, no
+hunting for a Zalo UID.
+
+**Chicken-and-egg solved.** The Hermes plugin only spawns the sidecar once
+`ZALO_PERSONAL_OWNER_UID` is set, but the UID is only knowable *after* a QR
+login. So `/connect` spawns the sidecar itself (detached) for the QR step. When
+the scan succeeds, `/status` learns the uid, persists it, enables the plugin in
+`config.yaml`, and restarts the gateway — which then takes over the sidecar
+(the login session persists on disk, so it survives the handover).
 
 | Method | Path | Body | Description |
 |---|---|---|---|
-| GET | `/api/zalo/status` | — | Connection state — poll this. `data.status` ∈ `disconnected, pending, scanned, connected, error`. On `connected`, auto-persists `ZALO_PERSONAL_OWNER_UID`. `data.sidecar=false` means the Node sidecar isn't up yet |
-| POST | `/api/zalo/connect` | — | Start QR login. Returns immediately with `{status:"pending", qr_url:"/api/zalo/qr"}` (or `{status:"connected"}` if already logged in) |
+| POST | `/api/zalo/connect` | — | Start QR login. Spawns the sidecar if needed. Returns `{status:"pending", qr_url:"/api/zalo/qr"}` (or `{status:"connected"}` if already logged in). `503` if the sidecar can't start (Node missing / plugin not installed) |
 | GET | `/api/zalo/qr` | — | Raw QR **PNG bytes** (not the JSON envelope) — use directly as `<img src>`. `404` while the QR is still generating; retry for 1–2s after `/connect` |
+| GET | `/api/zalo/status` | — | Connection state — poll this. `data.status` ∈ `disconnected, pending, scanned, connected, error`. On first `connected`, persists the uid + enables the plugin + restarts gateway (`data.activating=true` during that handover). `data.sidecar=false` means the Node sidecar isn't up yet |
 | POST | `/api/zalo/disconnect` | — | Logout + clear the Zalo session |
+
+`/status` data fields: `status`, `uid`, `name`, `error`, `sidecar` (bool — is
+the Node process reachable), `activating` (bool — gateway handover in progress).
 
 Dashboard flow:
 
@@ -394,27 +403,82 @@ Dashboard flow:
    pending      → show <img src="/api/zalo/qr"> + "Quét bằng app Zalo (Cài đặt → Zalo Web)"
    scanned      → "Đã quét, đang xác thực…"
    connected    → "✅ Đã kết nối: {name}"  + [Ngắt kết nối]
+                  (activating=true briefly while the gateway takes over)
    error        → show error + retry
 ```
 
 ```bash
-# Start QR login
+# 1. Start QR login (spawns sidecar)
 curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" \
   http://localhost:9997/api/zalo/connect
 # { "ok": true, "data": {"status": "pending", "qr_url": "/api/zalo/qr"}, "error": null }
 
-# Fetch the QR image (save + open it, or render in the dashboard)
+# 2. Fetch the QR image (render in the dashboard, or save + open)
 curl -s -H "Authorization: Bearer $MGMT_KEY" \
-  http://localhost:9997/api/zalo/qr -o zalo-qr.png
+  http://localhost:9997/api/zalo/qr -o zalo-qr.png   # 16–17 KB PNG
 
-# Poll until connected
+# 3. Poll until connected
 curl -s -H "Authorization: Bearer $MGMT_KEY" \
   http://localhost:9997/api/zalo/status
-# { "ok": true, "data": {"status": "connected", "uid": "98765", "name": "Sếp", "sidecar": true}, "error": null }
+# { "ok": true, "data": {"status": "connected", "uid": "98765", "name": "Sếp",
+#                        "sidecar": true, "activating": false}, "error": null }
 ```
 
 > ⚠️ Unofficial Zalo Web API. **Use a secondary number** — bulk friend/message
-> actions risk account bans. See `/root/.hermes/plugins/zalo-personal/README.md`.
+> actions risk account bans. The plugin is installed + enabled by default
+> (`--skip-zalo` to opt out). See `/root/.hermes/plugins/zalo-personal/README.md`.
+
+#### 11) OpenViking memory backend (12)
+
+[OpenViking](https://github.com/volcengine/OpenViking) is an optional context
+database / memory backend — **not installed by default** (it needs extra RAM +
+an embedding/VLM LLM key). The dashboard drives the full lifecycle on demand, so
+each customer decides whether to install it. Runs in an isolated venv at
+`/opt/hermes-openviking` under its own `hermes-openviking.service` on
+`127.0.0.1:1933`, wired into Hermes via `OPENVIKING_ENDPOINT`.
+
+| Method | Path | Body | Description |
+|---|---|---|---|
+| GET | `/api/openviking/status` | — | Lifecycle state: `installed`, `config_ready`, `service_active`, `healthy`, `wired_into_hermes`, `endpoint` |
+| POST | `/api/openviking/install` | — | Run the installer in the background (venv + `pip install openviking` + systemd unit). `202`; reuses an existing `OPENAI_API_KEY` from `.env` |
+| GET | `/api/openviking/config` | — | Current `ov.conf` (embedding + VLM), `api_key` masked. `{configured:false}` if not set yet |
+| POST | `/api/openviking/config` | `{api_key, api_base?, embedding_model?, vlm_model?, provider?, dimension?}` | Write `~/.openviking/ov.conf` (embedding + VLM). A single `api_key` is applied to both |
+| POST | `/api/openviking/test-key` | `{api_key, api_base?}` | Validate the LLM key (GET `<api_base>/models`) before saving. Does not persist |
+| POST | `/api/openviking/enable` | — | Start the service + set `OPENVIKING_ENDPOINT` + restart gateway. `409` if not installed or not configured |
+| POST | `/api/openviking/disable` | — | Stop the service + remove `OPENVIKING_ENDPOINT` + restart gateway (keeps the install) |
+| POST | `/api/openviking/restart` | — | Restart `hermes-openviking.service` (recover a hung server) |
+| POST | `/api/openviking/upgrade` | — | `pip install --upgrade openviking` (background) + restart. `202` |
+| GET | `/api/openviking/stats` | — | `service_active`, `active_since`, `data_dir`, `data_size_mb`, live `server_stats` (best-effort) |
+| POST | `/api/openviking/uninstall` | `{purge?: bool}` | Unwire + stop + run uninstaller in background. `purge=true` also deletes config + data |
+| GET | `/api/openviking/logs` | `lines` (query, default 100) | journal tail of `hermes-openviking.service` |
+
+Dashboard flow:
+
+```
+[Bật Memory nâng cao]
+  → POST /api/openviking/install        (poll /status until installed=true)
+  → POST /api/openviking/config {api_key}   (or rely on the reused OPENAI_API_KEY)
+  → POST /api/openviking/enable         (poll /status until healthy=true)
+[Tắt]      → POST /api/openviking/disable
+[Gỡ]       → POST /api/openviking/uninstall {"purge": true}
+```
+
+```bash
+# Install (background) then check
+curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" \
+  http://localhost:9997/api/openviking/install
+curl -s -H "Authorization: Bearer $MGMT_KEY" \
+  http://localhost:9997/api/openviking/status
+# { "ok": true, "data": {"installed": true, "config_ready": true,
+#     "service_active": false, "healthy": false, "wired_into_hermes": false,
+#     "endpoint": "http://127.0.0.1:1933"}, "error": null }
+
+# Configure (only if no usable OPENAI_API_KEY was reused) + enable
+curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" -H "Content-Type: application/json" \
+  -d '{"api_key":"sk-..."}' http://localhost:9997/api/openviking/config
+curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" \
+  http://localhost:9997/api/openviking/enable
+```
 
 ### API test results
 

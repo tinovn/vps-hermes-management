@@ -150,3 +150,125 @@ def test_ov_uninstall_unwires_and_runs(
     mock_un.assert_called_once_with(True)
     env = read_env(test_settings.hermes_home / ".env")
     assert "OPENVIKING_ENDPOINT" not in env
+
+
+# ─── config (read) ───────────────────────────────────────────────────────────
+
+
+def test_ov_get_config_not_configured(client: TestClient, auth_headers: dict, tmp_path) -> None:
+    conf = tmp_path / "ov.conf"  # absent
+    with patch("hermes_mgmt.routes.openviking._OV_CONF", conf):
+        resp = client.get("/api/openviking/config", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json()["data"]["configured"] is False
+
+
+def test_ov_get_config_masks_keys(client: TestClient, auth_headers: dict, tmp_path) -> None:
+    import json as _json
+
+    conf = tmp_path / "ov.conf"
+    conf.write_text(_json.dumps({
+        "embedding": {"dense": {"api_key": "sk-secret12345678", "model": "m1", "provider": "openai"}},
+        "vlm": {"api_key": "sk-secret12345678", "model": "m2", "provider": "openai"},
+    }), encoding="utf-8")
+    with patch("hermes_mgmt.routes.openviking._OV_CONF", conf):
+        resp = client.get("/api/openviking/config", headers=auth_headers)
+    data = resp.json()["data"]
+    assert data["configured"] is True
+    assert data["vlm"]["model"] == "m2"
+    assert "secret" not in data["embedding"]["api_key"]  # masked
+    assert data["embedding"]["api_key"].endswith("5678")
+
+
+# ─── test-key ────────────────────────────────────────────────────────────────
+
+
+def test_ov_test_key_missing(client: TestClient, auth_headers: dict) -> None:
+    resp = client.post("/api/openviking/test-key", headers=auth_headers, json={})
+    assert resp.status_code == 400
+
+
+def test_ov_test_key_valid(client: TestClient, auth_headers: dict) -> None:
+    import httpx as _httpx
+
+    mock = AsyncMock(return_value=_httpx.Response(200, json={"data": []}))
+    with patch("httpx.AsyncClient.get", mock):
+        resp = client.post(
+            "/api/openviking/test-key", headers=auth_headers, json={"api_key": "sk-x"}
+        )
+    assert resp.json()["data"]["valid"] is True
+
+
+def test_ov_test_key_invalid(client: TestClient, auth_headers: dict) -> None:
+    import httpx as _httpx
+
+    mock = AsyncMock(return_value=_httpx.Response(401, json={"error": "bad"}))
+    with patch("httpx.AsyncClient.get", mock):
+        resp = client.post(
+            "/api/openviking/test-key", headers=auth_headers, json={"api_key": "sk-x"}
+        )
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["data"]["valid"] is False
+
+
+# ─── restart ─────────────────────────────────────────────────────────────────
+
+
+def test_ov_restart_not_installed(client: TestClient, auth_headers: dict) -> None:
+    with patch("hermes_mgmt.routes.openviking._is_installed", return_value=False):
+        resp = client.post("/api/openviking/restart", headers=auth_headers)
+    assert resp.status_code == 404
+
+
+def test_ov_restart_ok(client: TestClient, auth_headers: dict) -> None:
+    with (
+        patch("hermes_mgmt.routes.openviking._is_installed", return_value=True),
+        patch("hermes_mgmt.routes.openviking.restart", AsyncMock(return_value=(0, "ok"))),
+    ):
+        resp = client.post("/api/openviking/restart", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json()["data"]["restarted"] is True
+
+
+# ─── upgrade ─────────────────────────────────────────────────────────────────
+
+
+def test_ov_upgrade_not_installed(client: TestClient, auth_headers: dict) -> None:
+    with patch("hermes_mgmt.routes.openviking._is_installed", return_value=False):
+        resp = client.post("/api/openviking/upgrade", headers=auth_headers)
+    assert resp.status_code == 404
+
+
+def test_ov_upgrade_triggers_background(client: TestClient, auth_headers: dict) -> None:
+    with (
+        patch("hermes_mgmt.routes.openviking._is_installed", return_value=True),
+        patch("hermes_mgmt.routes.openviking._do_upgrade", AsyncMock()) as mock_up,
+    ):
+        resp = client.post("/api/openviking/upgrade", headers=auth_headers)
+    assert resp.status_code == 202
+    mock_up.assert_called_once()
+
+
+# ─── stats ───────────────────────────────────────────────────────────────────
+
+
+def test_ov_stats_not_installed(client: TestClient, auth_headers: dict) -> None:
+    with patch("hermes_mgmt.routes.openviking._is_installed", return_value=False):
+        resp = client.get("/api/openviking/stats", headers=auth_headers)
+    assert resp.status_code == 404
+
+
+def test_ov_stats_reports_disk_and_uptime(client: TestClient, auth_headers: dict) -> None:
+    with (
+        patch("hermes_mgmt.routes.openviking._is_installed", return_value=True),
+        patch("hermes_mgmt.routes.openviking.is_active", AsyncMock(return_value=True)),
+        patch("hermes_mgmt.routes.openviking.active_since", AsyncMock(return_value="2026-06-04T10:00:00Z")),
+        patch("hermes_mgmt.routes.openviking._dir_size_bytes", return_value=5 * 1024 * 1024),
+        patch("httpx.AsyncClient.get", AsyncMock(side_effect=__import__("httpx").ConnectError("down"))),
+    ):
+        resp = client.get("/api/openviking/stats", headers=auth_headers)
+    data = resp.json()["data"]
+    assert data["service_active"] is True
+    assert data["data_size_mb"] == 5.0
+    assert data["server_stats"] is None
