@@ -42,14 +42,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["codex"], dependencies=[Depends(require_auth)])
 
 _HERMES_BIN = "/usr/local/bin/hermes"
-_AUTH_PROVIDER = "codex-oauth"
+_AUTH_PROVIDER = "openai-codex"
 _MODEL_PROVIDER = "codex"
 # Keys an auth.json entry may use for the Codex/OpenAI-Codex provider.
 _CODEX_AUTH_KEYS = ("codex", "openai-codex", "codex-oauth")
-# URL + user-code patterns in the device-flow output (kept loose — the exact
-# wording varies by Hermes version).
+# Strip ANSI colour codes the CLI emits around the URL/code.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# Device-flow output (verified against live CLI):
+#   1. Open this URL: https://auth.openai.com/codex/device
+#   2. Enter this code: 41JU-ST9W8   (4 chars - 5 chars, hyphenated)
 _URL_RE = re.compile(r"https://\S+")
-_CODE_RE = re.compile(r"\b([A-Z0-9]{4}-[A-Z0-9]{4})\b")
+_CODE_RE = re.compile(r"\b([A-Z0-9]{3,5}-[A-Z0-9]{3,5})\b")
 
 # In-process handle for the running device-flow subprocess (one at a time).
 _flow: dict = {"proc": None, "url": None, "code": None, "started": 0.0, "output": ""}
@@ -114,9 +117,13 @@ async def codex_start() -> ApiResponse:
     env = os.environ.copy()
     env.setdefault("HERMES_HOME", "/root/.hermes")
     env.setdefault("HOME", "/root")
+    # --no-browser + --manual-paste forces the headless device-code path (print
+    # URL + code instead of trying to open a browser on the server).
+    env["PYTHONUNBUFFERED"] = "1"
     try:
         proc = await asyncio.create_subprocess_exec(
             _HERMES_BIN, "auth", "add", _AUTH_PROVIDER,
+            "--type", "oauth", "--no-browser", "--manual-paste",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             stdin=asyncio.subprocess.DEVNULL,
@@ -143,12 +150,13 @@ async def codex_start() -> ApiResponse:
         if chunk:
             buf += chunk.decode(errors="replace")
             _flow["output"] = buf
+            clean = _ANSI_RE.sub("", buf)  # drop colour codes before matching
             if url is None:
-                m = _URL_RE.search(buf)
+                m = _URL_RE.search(clean)
                 if m:
                     url = m.group(0).rstrip(".,)")
             if code is None:
-                m = _CODE_RE.search(buf)
+                m = _CODE_RE.search(clean)
                 if m:
                     code = m.group(1)
         if url and code:

@@ -48,7 +48,15 @@ def test_codex_status_connected_sets_model(
 
 
 def test_codex_start_parses_url_and_code(client: TestClient, auth_headers: dict) -> None:
-    out = b"To authenticate, open https://auth.openai.com/device and enter code ABCD-1234\n"
+    # Mirror real CLI output incl. ANSI colour codes + 4-5 char hyphenated code.
+    out = (
+        b"To continue, follow these steps:\n"
+        b"  1. Open this URL in your browser:\n"
+        b"     \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n"
+        b"  2. Enter this code:\n"
+        b"     \x1b[94m41JU-ST9W8\x1b[0m\n"
+        b"Waiting for sign-in...\n"
+    )
 
     class _FakeStdout:
         def __init__(self, data: bytes) -> None:
@@ -72,8 +80,8 @@ def test_codex_start_parses_url_and_code(client: TestClient, auth_headers: dict)
         resp = client.post("/api/codex/auth/start", headers=auth_headers)
     data = resp.json()["data"]
     assert data["status"] == "pending"
-    assert data["url"].startswith("https://auth.openai.com/device")
-    assert data["code"] == "ABCD-1234"
+    assert data["url"] == "https://auth.openai.com/codex/device"
+    assert data["code"] == "41JU-ST9W8"
 
 
 # ─── import ──────────────────────────────────────────────────────────────────
