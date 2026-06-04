@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, status
 from fastapi.responses import Response
 
 from hermes_mgmt.config import Settings
@@ -183,13 +183,12 @@ def _enable_plugin_in_config(settings: Settings) -> None:
     cfg_path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
-async def _activate_plugin_and_handover(settings: Settings, uid: str) -> None:
-    """After QR connect: persist uid, enable plugin, restart gateway.
+async def _activate_plugin_and_handover(settings: Settings) -> None:
+    """After OWNER_UID is set: enable plugin in config.yaml + restart gateway.
 
-    The gateway then satisfies check_requirements() (uid present) and takes over
-    sidecar lifecycle. Run as a background task — restart cycles the gateway.
+    The gateway then satisfies check_requirements() (owner uid present) and takes
+    over sidecar lifecycle. Run as a background task — restart cycles the gateway.
     """
-    _persist_owner_uid(settings, uid)
     try:
         _enable_plugin_in_config(settings)
     except Exception as exc:
@@ -197,7 +196,7 @@ async def _activate_plugin_and_handover(settings: Settings, uid: str) -> None:
     try:
         await restart("hermes-gateway", settings.allowed_services)
     except Exception as exc:
-        logger.error("gateway restart after Zalo connect failed: %s", exc)
+        logger.error("gateway restart after Zalo owner-set failed: %s", exc)
 
 
 def _sidecar_base_url(settings: Settings) -> str:
@@ -236,79 +235,65 @@ def _sidecar_unreachable() -> HTTPException:
     )
 
 
-def _persist_owner_uid(settings: Settings, uid: str) -> None:
-    """Write ZALO_PERSONAL_OWNER_UID to both env stores if not already set.
+def _set_owner_uid(settings: Settings, uid: str) -> None:
+    """Write ZALO_PERSONAL_OWNER_UID to both env stores (overwrites).
 
-    Mirrors the channels.py dual-write pattern: HERMES_HOME/.env (dashboard
-    reads it) + /opt/hermes/.env (systemd EnvironmentFile for the gateway).
+    NOTE: owner = the BOSS who messages the bot to give admin commands — a
+    DIFFERENT Zalo account from the bot (the QR-scanned account). The bot's own
+    uid (getOwnId/health.uid) must NOT be used here. Owner is resolved from the
+    boss's phone number via /api/zalo/set-owner.
     """
     if not uid:
         return
     hermes_env_file = settings.hermes_home / ".env"
-    merged = read_env(settings.env_file)
-    merged.update(read_env(hermes_env_file))
-    if merged.get(_OWNER_UID_KEY, "").strip():
-        return  # respect any value the user already configured
     set_env(hermes_env_file, _OWNER_UID_KEY, uid)
     set_env(settings.env_file, _OWNER_UID_KEY, uid)
-    logger.info("Auto-persisted %s=%s after Zalo connect", _OWNER_UID_KEY, uid)
+    logger.info("Set %s=%s", _OWNER_UID_KEY, uid)
 
 
-def _plugin_active(settings: Settings) -> bool:
-    """True if OWNER_UID is set (gateway can run the plugin itself)."""
+def _owner_uid(settings: Settings) -> str:
     merged = read_env(settings.env_file)
     merged.update(read_env(settings.hermes_home / ".env"))
-    return bool(merged.get(_OWNER_UID_KEY, "").strip())
+    return merged.get(_OWNER_UID_KEY, "").strip()
 
 
 @router.get("/api/zalo/status", response_model=ApiResponse)
 async def zalo_status(
-    background_tasks: BackgroundTasks,
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> ApiResponse:
     """Connection state for the dashboard to poll.
 
     data.status ∈ {disconnected, pending, scanned, connected, error}.
-    On first successful connect (uid learned, plugin not yet active), persist the
-    uid + enable the plugin + restart the gateway so it takes over the sidecar.
+    `bot_uid` = the logged-in (QR-scanned) bot account. `owner_set` tells the
+    GUI whether the boss's owner UID has been configured yet — until it is, the
+    bot won't accept admin commands and the gateway won't run the plugin.
     """
     try:
         resp = await _sidecar_get(settings, "/health")
     except httpx.RequestError:
-        # Sidecar not up yet — report disconnected rather than erroring, so the
-        # dashboard can still render the "Kết nối Zalo" button.
         return ApiResponse(
             ok=True,
-            data={"status": "disconnected", "uid": None, "name": None, "sidecar": False},
+            data={"status": "disconnected", "bot_uid": None, "name": None,
+                  "sidecar": False, "owner_set": bool(_owner_uid(settings))},
         )
 
     if resp.status_code != 200:
         return ApiResponse(
             ok=True,
-            data={"status": "disconnected", "uid": None, "name": None, "sidecar": True},
+            data={"status": "disconnected", "bot_uid": None, "name": None,
+                  "sidecar": True, "owner_set": bool(_owner_uid(settings))},
         )
 
     health = resp.json()
-    uid = health.get("uid")
-    handover = False
-    if health.get("status") == "connected" and uid:
-        # First time we see a uid and the plugin isn't wired yet → hand over to
-        # the gateway (persist uid + enable + restart). Idempotent thereafter.
-        if not _plugin_active(settings):
-            handover = True
-            background_tasks.add_task(_activate_plugin_and_handover, settings, str(uid))
-        else:
-            _persist_owner_uid(settings, str(uid))
-
     return ApiResponse(
         ok=True,
         data={
             "status": health.get("status", "disconnected"),
-            "uid": uid,
+            "bot_uid": health.get("uid"),          # the bot account, NOT the owner
             "name": health.get("name"),
             "error": health.get("error"),
             "sidecar": True,
-            "activating": handover,
+            "owner_set": bool(_owner_uid(settings)),
         },
     )
 
@@ -345,10 +330,9 @@ async def zalo_connect(
 
     body = resp.json()
     if body.get("status") == "already_connected":
-        uid = body.get("uid")
-        if uid:
-            _persist_owner_uid(settings, str(uid))
-        return ApiResponse(ok=True, data={"status": "connected", "uid": uid})
+        # bot_uid = the logged-in account, NOT the owner. Owner is set
+        # separately via /api/zalo/set-owner (boss's phone → uid).
+        return ApiResponse(ok=True, data={"status": "connected", "bot_uid": body.get("uid")})
 
     # QR is generated asynchronously; the dashboard fetches it from /api/zalo/qr.
     return ApiResponse(ok=True, data={"status": "pending", "qr_url": "/api/zalo/qr"})
@@ -398,3 +382,70 @@ async def zalo_disconnect(
             detail=f"Sidecar trả lỗi khi đăng xuất (HTTP {resp.status_code}).",
         )
     return ApiResponse(ok=True, data={"status": "disconnected"})
+
+
+# ─── owner (the boss who controls the bot) ──────────────────────────────────
+
+
+@router.get("/api/zalo/owner", response_model=ApiResponse)
+async def zalo_get_owner(
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> ApiResponse:
+    """Current owner UID (the boss who can give the bot admin commands)."""
+    uid = _owner_uid(settings)
+    return ApiResponse(ok=True, data={"owner_uid": uid or None, "owner_set": bool(uid)})
+
+
+@router.post("/api/zalo/set-owner", response_model=ApiResponse)
+async def zalo_set_owner(
+    background_tasks: BackgroundTasks,
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    body: dict = Body(...),
+) -> ApiResponse:
+    """Set the owner (boss) by phone number or explicit UID.
+
+    The owner is the boss's PERSONAL Zalo account — DIFFERENT from the bot
+    (QR-scanned) account. Body one of:
+      { "phone": "09..." }  → resolved to a UID via the sidecar
+      { "uid": "123..." }   → set directly (advanced)
+    On success: set ZALO_PERSONAL_OWNER_UID, enable the plugin, restart gateway.
+    The bot (sidecar) must be connected to resolve a phone.
+    """
+    uid = str(body.get("uid", "")).strip()
+    phone = str(body.get("phone", "")).strip()
+
+    if not uid and phone:
+        # Resolve phone → uid via the connected sidecar.
+        try:
+            url = f"{_sidecar_base_url(settings)}/users/by-phones"
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.post(url, json={"phones": [phone]})
+        except httpx.RequestError:
+            raise _sidecar_unreachable()
+        if r.status_code == 503:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Bot Zalo chưa đăng nhập — quét QR kết nối trước rồi mới tra số sếp.",
+            )
+        if r.status_code != 200:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Không tra được số (HTTP {r.status_code}).",
+            )
+        users = r.json().get("users") or []
+        if not users or not users[0].get("uid"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy tài khoản Zalo cho số {phone}. Kiểm tra lại số.",
+            )
+        uid = str(users[0]["uid"])
+
+    if not uid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cần 'phone' (số Zalo của sếp) hoặc 'uid'.",
+        )
+
+    _set_owner_uid(settings, uid)
+    background_tasks.add_task(_activate_plugin_and_handover, settings)
+    return ApiResponse(ok=True, data={"owner_uid": uid, "owner_set": True})

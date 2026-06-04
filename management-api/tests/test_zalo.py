@@ -45,48 +45,36 @@ def test_zalo_status_pending(client: TestClient, auth_headers: dict) -> None:
     assert resp.json()["data"]["status"] == "pending"
 
 
-def test_zalo_status_connected_triggers_handover(
+def test_zalo_status_connected_reports_bot_uid_not_owner(
     client: TestClient, auth_headers: dict, test_settings: Settings
 ) -> None:
-    # First connect (no OWNER_UID yet) → schedule handover (persist + enable +
-    # restart gateway) as a background task. We mock the handover itself.
+    # health.uid is the BOT account — must be reported as bot_uid, and status
+    # must NOT auto-set the owner from it.
     mock_get = AsyncMock(
-        return_value=_fake_response(
-            200, {"status": "connected", "uid": "98765", "name": "Sếp"}
-        )
+        return_value=_fake_response(200, {"status": "connected", "uid": "98765", "name": "Bot"})
     )
-    with (
-        patch("hermes_mgmt.routes.zalo._sidecar_get", mock_get),
-        patch("hermes_mgmt.routes.zalo._activate_plugin_and_handover", AsyncMock()) as mock_act,
-    ):
+    with patch("hermes_mgmt.routes.zalo._sidecar_get", mock_get):
         resp = client.get("/api/zalo/status", headers=auth_headers)
-
-    body = resp.json()
-    assert body["data"]["status"] == "connected"
-    assert body["data"]["uid"] == "98765"
-    assert body["data"]["activating"] is True
-    mock_act.assert_called_once()
-    # Called with (settings, "98765")
-    assert mock_act.call_args.args[1] == "98765"
+    data = resp.json()["data"]
+    assert data["status"] == "connected"
+    assert data["bot_uid"] == "98765"
+    assert data["owner_set"] is False  # owner NOT set from bot uid
+    env = read_env(test_settings.hermes_home / ".env")
+    assert "ZALO_PERSONAL_OWNER_UID" not in env or not env.get("ZALO_PERSONAL_OWNER_UID")
 
 
-def test_zalo_status_connected_already_active_no_handover(
+def test_zalo_status_owner_set_flag(
     client: TestClient, auth_headers: dict, test_settings: Settings
 ) -> None:
-    # OWNER_UID already set → plugin active → no handover, just keep uid.
     from hermes_mgmt.env_file import set_env
 
     set_env(test_settings.hermes_home / ".env", "ZALO_PERSONAL_OWNER_UID", "111")
     mock_get = AsyncMock(
-        return_value=_fake_response(200, {"status": "connected", "uid": "111", "name": "X"})
+        return_value=_fake_response(200, {"status": "connected", "uid": "98765", "name": "Bot"})
     )
-    with (
-        patch("hermes_mgmt.routes.zalo._sidecar_get", mock_get),
-        patch("hermes_mgmt.routes.zalo._activate_plugin_and_handover", AsyncMock()) as mock_act,
-    ):
+    with patch("hermes_mgmt.routes.zalo._sidecar_get", mock_get):
         resp = client.get("/api/zalo/status", headers=auth_headers)
-    assert resp.json()["data"]["activating"] is False
-    mock_act.assert_not_called()
+    assert resp.json()["data"]["owner_set"] is True
 
 
 # ─── connect ───────────────────────────────────────────────────────────────
@@ -118,9 +106,12 @@ def test_zalo_connect_already_connected(
         patch("hermes_mgmt.routes.zalo._sidecar_post", mock_post),
     ):
         resp = client.post("/api/zalo/connect", headers=auth_headers)
-    assert resp.json()["data"]["status"] == "connected"
+    data = resp.json()["data"]
+    assert data["status"] == "connected"
+    assert data["bot_uid"] == "555"  # bot account, NOT owner
+    # connect must NOT set owner from the bot uid
     env = read_env(test_settings.hermes_home / ".env")
-    assert env.get("ZALO_PERSONAL_OWNER_UID") == "555"
+    assert not env.get("ZALO_PERSONAL_OWNER_UID")
 
 
 def test_zalo_connect_sidecar_cannot_spawn(client: TestClient, auth_headers: dict) -> None:
@@ -206,3 +197,56 @@ def test_zalo_disconnect(client: TestClient, auth_headers: dict) -> None:
         resp = client.post("/api/zalo/disconnect", headers=auth_headers)
     assert resp.status_code == 200
     assert resp.json()["data"]["status"] == "disconnected"
+
+
+# ─── set-owner (boss phone → uid) ───────────────────────────────────────────
+
+
+def test_set_owner_by_phone(
+    client: TestClient, auth_headers: dict, test_settings: Settings
+) -> None:
+    # sidecar /users/by-phones resolves the boss phone → uid
+    mock_post = AsyncMock(
+        return_value=_fake_response(200, {"ok": True, "users": [{"phone": "0900", "uid": "boss123", "name": "Sếp"}]})
+    )
+    with (
+        patch("hermes_mgmt.routes.zalo.httpx.AsyncClient.post", mock_post),
+        patch("hermes_mgmt.routes.zalo._activate_plugin_and_handover", AsyncMock()) as mock_act,
+    ):
+        resp = client.post("/api/zalo/set-owner", headers=auth_headers, json={"phone": "0900"})
+    assert resp.status_code == 200
+    assert resp.json()["data"]["owner_uid"] == "boss123"
+    env = read_env(test_settings.hermes_home / ".env")
+    assert env.get("ZALO_PERSONAL_OWNER_UID") == "boss123"
+    mock_act.assert_called_once()
+
+
+def test_set_owner_by_uid_direct(
+    client: TestClient, auth_headers: dict, test_settings: Settings
+) -> None:
+    with patch("hermes_mgmt.routes.zalo._activate_plugin_and_handover", AsyncMock()):
+        resp = client.post("/api/zalo/set-owner", headers=auth_headers, json={"uid": "boss999"})
+    assert resp.status_code == 200
+    env = read_env(test_settings.hermes_home / ".env")
+    assert env.get("ZALO_PERSONAL_OWNER_UID") == "boss999"
+
+
+def test_set_owner_phone_not_found(client: TestClient, auth_headers: dict) -> None:
+    mock_post = AsyncMock(return_value=_fake_response(200, {"ok": True, "users": []}))
+    with patch("hermes_mgmt.routes.zalo.httpx.AsyncClient.post", mock_post):
+        resp = client.post("/api/zalo/set-owner", headers=auth_headers, json={"phone": "0900"})
+    assert resp.status_code == 404
+
+
+def test_set_owner_missing_input(client: TestClient, auth_headers: dict) -> None:
+    resp = client.post("/api/zalo/set-owner", headers=auth_headers, json={})
+    assert resp.status_code == 400
+
+
+def test_get_owner(client: TestClient, auth_headers: dict, test_settings: Settings) -> None:
+    from hermes_mgmt.env_file import set_env
+
+    set_env(test_settings.hermes_home / ".env", "ZALO_PERSONAL_OWNER_UID", "boss")
+    resp = client.get("/api/zalo/owner", headers=auth_headers)
+    assert resp.json()["data"]["owner_uid"] == "boss"
+    assert resp.json()["data"]["owner_set"] is True
