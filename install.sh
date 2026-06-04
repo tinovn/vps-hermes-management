@@ -350,7 +350,8 @@ if [[ ! -d .git ]]; then
              hermes_mgmt/routes/control.py hermes_mgmt/routes/config_routes.py \
              hermes_mgmt/routes/channels.py hermes_mgmt/routes/cron_routes.py \
              hermes_mgmt/routes/logs.py hermes_mgmt/routes/auth_routes.py \
-             hermes_mgmt/routes/env_routes.py hermes_mgmt/routes/cli_routes.py; do
+             hermes_mgmt/routes/env_routes.py hermes_mgmt/routes/cli_routes.py \
+             hermes_mgmt/routes/zalo.py hermes_mgmt/routes/openviking.py; do
       mkdir -p "$(dirname "${MGMT_DIR}/${f}")"
       curl -fsSL "${MGMT_REPO_RAW}/management-api/${f}" -o "${MGMT_DIR}/${f}" \
         || die "Failed to fetch ${f}"
@@ -389,7 +390,18 @@ if [[ "$WITH_ZALO" == "true" && "$SKIP_HERMES" != "true" ]]; then
     popd >/dev/null
     # Default session/data dir for the sidecar (overridable via .env).
     mkdir -p /opt/data/zalo
-    log "Zalo plugin installed at ${ZALO_PLUGIN_DIR}"
+
+    # Hermes discovers plugins in the dir but ships them DISABLED — must enable
+    # explicitly or the gateway never loads the adapter ("No messaging platforms
+    # enabled"). Plugin name = `name:` in plugin.yaml (zalo-personal-platform),
+    # which can differ from the dir name. Parse it so we enable the right one.
+    ZALO_PLUGIN_ID="$(grep -E '^name:' "${ZALO_PLUGIN_DIR}/plugin.yaml" 2>/dev/null | head -1 | cut -d: -f2 | xargs)"
+    ZALO_PLUGIN_ID="${ZALO_PLUGIN_ID:-${ZALO_PLUGIN_NAME}}"
+    log "Enabling Hermes plugin '${ZALO_PLUGIN_ID}'..."
+    HERMES_HOME=/root/.hermes /usr/local/bin/hermes plugins enable "${ZALO_PLUGIN_ID}" \
+      >>"${LOG_FILE}" 2>&1 \
+      || log "WARN: 'hermes plugins enable ${ZALO_PLUGIN_ID}' failed — enable it from the dashboard/CLI"
+    log "Zalo plugin installed + enabled at ${ZALO_PLUGIN_DIR}"
   else
     log "WARN: Zalo plugin sources incomplete — sidecar not built"
   fi

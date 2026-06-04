@@ -50,6 +50,7 @@ class Settings(BaseSettings):
         "hermes-gateway",
         "hermes-dashboard",
         "hermes-mgmt",
+        "hermes-openviking",
         "caddy",
     )
 
