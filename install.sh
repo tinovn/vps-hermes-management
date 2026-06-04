@@ -351,7 +351,8 @@ if [[ ! -d .git ]]; then
              hermes_mgmt/routes/channels.py hermes_mgmt/routes/cron_routes.py \
              hermes_mgmt/routes/logs.py hermes_mgmt/routes/auth_routes.py \
              hermes_mgmt/routes/env_routes.py hermes_mgmt/routes/cli_routes.py \
-             hermes_mgmt/routes/zalo.py hermes_mgmt/routes/openviking.py; do
+             hermes_mgmt/routes/zalo.py hermes_mgmt/routes/openviking.py \
+             hermes_mgmt/routes/codex.py; do
       mkdir -p "$(dirname "${MGMT_DIR}/${f}")"
       curl -fsSL "${MGMT_REPO_RAW}/management-api/${f}" -o "${MGMT_DIR}/${f}" \
         || die "Failed to fetch ${f}"

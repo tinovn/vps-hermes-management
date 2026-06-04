@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from hermes_mgmt.routes.auth_routes import router as auth_router
 from hermes_mgmt.routes.channels import router as channels_router
 from hermes_mgmt.routes.cli_routes import router as cli_router
+from hermes_mgmt.routes.codex import router as codex_router
 from hermes_mgmt.routes.config_routes import router as config_router
 from hermes_mgmt.routes.control import router as control_router
 from hermes_mgmt.routes.cron_routes import router as cron_router
@@ -26,4 +27,5 @@ all_routers: list[APIRouter] = [
     cli_router,
     zalo_router,
     openviking_router,
+    codex_router,
 ]
