@@ -8,7 +8,7 @@ Inspired by the OpenClaw deployment pattern, rewritten around Hermes's Python st
 
 - **One-command install** — `curl … | bash` sets up Hermes + dashboard + mgmt API in ~3 min
 - **No Docker** — runs directly on the OS via systemd, saves 200-500 MB RAM
-- **FastAPI Management API** — 58 endpoints for status/config/channels/cron/logs/CLI/Zalo/OpenViking (smoke-tested 34/34 PASS, see [#api-test-results](#api-test-results))
+- **FastAPI Management API** — 61 endpoints for status/config/channels/cron/logs/CLI/Zalo/OpenViking/Codex (smoke-tested 34/34 PASS, see [#api-test-results](#api-test-results))
 - **15 provider templates** — Anthropic, OpenAI, Google, xAI, DeepSeek, Groq, Mistral, Together, Nous Portal, OpenRouter, HuggingFace, Kimi, MiMo, MiniMax, z.ai
 - **6 messaging channels** — Telegram, Discord, Slack, Signal, WhatsApp, Email
 - **Auto SSL** — Let's Encrypt via Caddy, self-signed fallback when DNS isn't ready
@@ -203,7 +203,7 @@ Every JSON response uses the same shape:
 
 Validation errors return FastAPI's standard `422` with `{ "detail": [...] }`.
 
-### Endpoint catalog (58 routes)
+### Endpoint catalog (61 routes)
 
 #### 1) Health & info (public + bearer)
 
@@ -478,6 +478,43 @@ curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" -H "Content-Type: applicati
   -d '{"api_key":"sk-..."}' http://localhost:9997/api/openviking/config
 curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" \
   http://localhost:9997/api/openviking/enable
+```
+
+#### 12) OpenAI Codex OAuth (3)
+
+Log the bot into **OpenAI Codex** (provider `openai-codex`) without an API key,
+straight from the dashboard. Codex uses a **device-code** flow: the API starts
+`hermes auth add openai-codex` headless, returns a URL + short code; the user
+opens the URL, enters the code, and the background process writes the token to
+`~/.hermes/auth.json`. On success the bot is switched to the `codex` provider
+automatically.
+
+| Method | Path | Body | Description |
+|---|---|---|---|
+| POST | `/api/codex/auth/start` | — | Start device-code login. Returns `{status:"pending", url, code}` — show both to the user. The process keeps polling in the background |
+| GET | `/api/codex/auth/status` | — | `disconnected` / `pending` (with `url`+`code`) / `connected`. On first `connected`, sets `config.yaml` model.provider=codex + restarts gateway |
+| POST | `/api/codex/auth/import` | `{auth_json}` | Fallback — paste an `auth.json` from Codex CLI / another machine instead of the device flow. Validates it has a codex entry, then sets model + restarts |
+
+Dashboard flow:
+
+```
+[Đăng nhập Codex]
+  → POST /api/codex/auth/start          → show url + code
+  → user opens url, enters code in browser
+  → poll GET /api/codex/auth/status     → connected (bot now uses Codex)
+```
+
+```bash
+# 1. Start — show the url + code to the user
+curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" \
+  http://localhost:9997/api/codex/auth/start
+# { "ok": true, "data": {"status": "pending",
+#     "url": "https://auth.openai.com/codex/device", "code": "41R1-F6HEA"}, "error": null }
+
+# 2. Poll until the user finishes in the browser
+curl -s -H "Authorization: Bearer $MGMT_KEY" \
+  http://localhost:9997/api/codex/auth/status
+# { "ok": true, "data": {"status": "connected", "model_set": true}, "error": null }
 ```
 
 ### API test results
