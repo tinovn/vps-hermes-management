@@ -125,3 +125,30 @@ def test_codex_import_accepts_string_json(
     with patch("hermes_mgmt.routes.codex.restart", AsyncMock(return_value=(0, "ok"))):
         resp = client.post("/api/codex/auth/import", headers=auth_headers, json=payload)
     assert resp.status_code == 200
+
+
+# ─── disable ─────────────────────────────────────────────────────────────────
+
+
+def test_codex_disable_clears_auth_and_config(
+    client: TestClient, auth_headers: dict, test_settings: Settings
+) -> None:
+    _write_auth(test_settings, {"active_provider": "openai-codex",
+                                "providers": {"openai-codex": {"access_token": "t"}},
+                                "codex": {"access_token": "t"}})
+    test_settings.hermes_home.mkdir(parents=True, exist_ok=True)
+    (test_settings.hermes_home / "config.yaml").write_text("model:\n  provider: codex\n")
+    with (
+        patch("hermes_mgmt.routes.codex.asyncio.create_subprocess_exec", AsyncMock()),
+        patch("hermes_mgmt.routes.codex.restart", AsyncMock(return_value=(0, "ok"))),
+    ):
+        resp = client.post("/api/codex/auth/disable", headers=auth_headers,
+                           json={"to_provider": "deepseek"})
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "disconnected"
+    auth = json.loads((test_settings.hermes_home / "auth.json").read_text())
+    assert auth["active_provider"] is None
+    assert "codex" not in auth and "openai-codex" not in auth.get("providers", {})
+    import yaml
+    cfg = yaml.safe_load((test_settings.hermes_home / "config.yaml").read_text())
+    assert cfg["model"]["provider"] == "deepseek"

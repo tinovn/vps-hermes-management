@@ -270,3 +270,82 @@ async def codex_import(
 
     background_tasks.add_task(_restart_gw)
     return ApiResponse(ok=True, data={"status": "connected", "imported": True})
+
+
+# ─── disable / logout ────────────────────────────────────────────────────────
+
+
+@router.post("/api/codex/auth/disable", response_model=ApiResponse)
+async def codex_disable(
+    background_tasks: BackgroundTasks,
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    body: dict = Body(default={}),
+) -> ApiResponse:
+    """Disconnect Codex OAuth so another provider can be selected.
+
+    Codex OAuth login records active_provider=openai-codex in auth.json, which
+    Hermes prefers over config.yaml — so the dashboard can't switch providers
+    until Codex is removed. This runs `hermes auth remove openai-codex`, then
+    defensively clears the codex entry + active_provider from auth.json and
+    strips model.provider=codex from config.yaml so the gateway stops requesting
+    Codex. Body {"to_provider": "deepseek"} optionally repoints config there.
+    """
+    # 1. Best-effort CLI removal (handles Hermes internal bookkeeping).
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _HERMES_BIN, "auth", "remove", _AUTH_PROVIDER,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            stdin=asyncio.subprocess.DEVNULL,
+            env={**os.environ, "HERMES_HOME": str(settings.hermes_home), "HOME": "/root"},
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=15)
+    except Exception as exc:
+        logger.warning("hermes auth remove openai-codex failed (continuing): %s", exc)
+
+    # 2. Defensive cleanup of auth.json (drop codex entry + active_provider).
+    af = _auth_file(settings)
+    if af.exists():
+        try:
+            data = json.loads(af.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                provs = data.get("providers")
+                if isinstance(provs, dict):
+                    for k in _CODEX_AUTH_KEYS:
+                        provs.pop(k, None)
+                for k in _CODEX_AUTH_KEYS:
+                    data.pop(k, None)
+                if data.get("active_provider") in _CODEX_AUTH_KEYS:
+                    data["active_provider"] = None
+                af.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("auth.json cleanup failed: %s", exc)
+
+    # 3. Repoint config.yaml away from codex (so gateway stops requesting it).
+    import yaml
+
+    to_provider = (body.get("to_provider") or "").strip()
+    cfg = settings.hermes_home / "config.yaml"
+    try:
+        cfg_data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        cfg_data = {}
+    model_cfg = cfg_data.get("model") if isinstance(cfg_data.get("model"), dict) else {}
+    if model_cfg.get("provider") == _MODEL_PROVIDER:
+        if to_provider:
+            model_cfg["provider"] = to_provider
+        else:
+            model_cfg.pop("provider", None)
+        cfg_data["model"] = model_cfg
+        cfg.write_text(yaml.safe_dump(cfg_data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    async def _restart_gw() -> None:
+        try:
+            await restart("hermes-gateway", settings.allowed_services)
+        except Exception as exc:
+            logger.error("gateway restart after Codex disable failed: %s", exc)
+
+    background_tasks.add_task(_restart_gw)
+    return ApiResponse(
+        ok=True,
+        data={"status": "disconnected", "to_provider": to_provider or None},
+    )
