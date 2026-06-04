@@ -66,16 +66,24 @@ async def get_config(settings: Annotated[Settings, Depends(get_settings_dep)]) -
     return ApiResponse(ok=True, data=masked)
 
 
-def _normalize_model_string(provider: str, model: str) -> str:
-    """Build the canonical `<provider>/<bare-model>` string Hermes expects.
+def _strip_model_default(config_path) -> None:
+    """Remove model.default from config.yaml (codex uses the account default).
 
-    Accepts either a bare model id (`deepseek-v4-flash`) or one already
-    prefixed (`deepseek/deepseek-v4-flash`); the latter previously produced
-    a double-prefixed `deepseek/deepseek/deepseek-v4-flash`.
+    Idempotent; no-op if the file/section is missing or already clean.
     """
-    prefix = f"{provider}/"
-    bare_model = model[len(prefix):] if model.startswith(prefix) else model
-    return f"{prefix}{bare_model}"
+    import yaml
+    from pathlib import Path
+
+    p = Path(config_path)
+    try:
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return
+    model = data.get("model")
+    if isinstance(model, dict) and "default" in model:
+        model.pop("default", None)
+        data["model"] = model
+        p.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
 @router.put("/api/config/provider", response_model=ApiResponse)
@@ -84,20 +92,31 @@ async def set_provider(
     background_tasks: BackgroundTasks,
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> ApiResponse:
-    model_string = _normalize_model_string(body.provider, body.model)
     # systemd unit's EnvironmentFile may not propagate HERMES_HOME to the
     # subprocess on all distros; pass it explicitly so the CLI never falls
     # back to $HOME/.hermes (which on the service's root account would be
     # /root/.hermes, a different file from the one GET /api/config reads).
     hermes_env = {"HERMES_HOME": str(settings.hermes_home)}
-    result = await run_hermes(
-        "config", ["set", "model.default", body.model], env_overrides=hermes_env
-    )
-    if result.exit_code != 0:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"hermes config set model.default failed: {result.stderr}",
+
+    # Codex via a ChatGPT account REJECTS an explicit model.default — the
+    # backend only accepts its own account-default model (sending e.g.
+    # "gpt-5.1-codex-max" → HTTP 400 "model not supported"). So for codex we
+    # CLEAR model.default and let Hermes/account pick. Every other provider
+    # needs an explicit model.
+    is_codex = body.provider in ("codex", "openai-codex")
+    if is_codex:
+        # `hermes config` has no `unset`; strip model.default directly from
+        # config.yaml so Codex falls back to the account-default model.
+        _strip_model_default(settings.hermes_home / "config.yaml")
+    else:
+        result = await run_hermes(
+            "config", ["set", "model.default", body.model], env_overrides=hermes_env
         )
+        if result.exit_code != 0:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"hermes config set model.default failed: {result.stderr}",
+            )
     result = await run_hermes(
         "config", ["set", "model.provider", body.provider], env_overrides=hermes_env
     )

@@ -68,7 +68,9 @@ class EnvKeyRequest(BaseModel):
 
 class ProviderConfigRequest(BaseModel):
     provider: str
-    model: str
+    # Optional: codex (ChatGPT account) takes no explicit model — it uses the
+    # account default and rejects a specified model. Other providers need one.
+    model: str = ""
 
     @field_validator("provider")
     @classmethod

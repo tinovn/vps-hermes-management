@@ -1,60 +1,37 @@
 """Unit tests for hermes_mgmt.routes.config_routes pure helpers."""
 from __future__ import annotations
 
-import pytest
+import yaml
 
-from hermes_mgmt.routes.config_routes import _normalize_model_string
+from hermes_mgmt.routes.config_routes import _strip_model_default
 
 
-class TestNormalizeModelString:
-    """Regression coverage for the double-prefix bug in PUT /api/config/provider.
+class TestStripModelDefault:
+    """PUT /api/config/provider clears model.default for codex (ChatGPT account
+    rejects an explicit model), but keeps everything else intact."""
 
-    Hermes expects ``model.default`` to be ``<provider>/<bare-model>``.
-    Earlier the route built it via ``f"{provider}/{model}"`` blindly, which
-    produced ``deepseek/deepseek/deepseek-chat`` when callers passed an
-    already-prefixed model.
-    """
+    def test_removes_model_default(self, tmp_path) -> None:
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("model:\n  provider: codex\n  default: gpt-5.1-codex-max\n")
+        _strip_model_default(cfg)
+        data = yaml.safe_load(cfg.read_text())
+        assert "default" not in data["model"]
+        assert data["model"]["provider"] == "codex"  # provider preserved
 
-    def test_bare_model_gets_prefixed(self) -> None:
-        assert (
-            _normalize_model_string("deepseek", "deepseek-v4-flash")
-            == "deepseek/deepseek-v4-flash"
+    def test_noop_when_no_default(self, tmp_path) -> None:
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("model:\n  provider: codex\n")
+        _strip_model_default(cfg)  # must not raise
+        assert yaml.safe_load(cfg.read_text())["model"]["provider"] == "codex"
+
+    def test_noop_when_file_missing(self, tmp_path) -> None:
+        _strip_model_default(tmp_path / "nope.yaml")  # must not raise
+
+    def test_preserves_other_keys(self, tmp_path) -> None:
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "model:\n  provider: codex\n  default: x\nplugins:\n  enabled:\n  - zalo-personal-platform\n"
         )
-
-    def test_already_prefixed_model_kept_as_is(self) -> None:
-        assert (
-            _normalize_model_string("deepseek", "deepseek/deepseek-v4-flash")
-            == "deepseek/deepseek-v4-flash"
-        )
-
-    def test_anthropic_provider(self) -> None:
-        assert (
-            _normalize_model_string("anthropic", "claude-sonnet-4-6")
-            == "anthropic/claude-sonnet-4-6"
-        )
-        assert (
-            _normalize_model_string("anthropic", "anthropic/claude-sonnet-4-6")
-            == "anthropic/claude-sonnet-4-6"
-        )
-
-    def test_provider_appearing_inside_model_id_not_stripped(self) -> None:
-        # Model ids may legitimately contain the provider word elsewhere —
-        # only an exact ``<provider>/`` prefix should be stripped.
-        assert (
-            _normalize_model_string("openai", "openai-codex-1")
-            == "openai/openai-codex-1"
-        )
-
-    @pytest.mark.parametrize(
-        "provider,model,expected",
-        [
-            ("openrouter", "anthropic/claude-sonnet-4.6",
-             "openrouter/anthropic/claude-sonnet-4.6"),
-            ("huggingface", "meta-llama/Llama-4-Maverick-17B",
-             "huggingface/meta-llama/Llama-4-Maverick-17B"),
-        ],
-    )
-    def test_routed_models_keep_inner_slashes(
-        self, provider: str, model: str, expected: str
-    ) -> None:
-        assert _normalize_model_string(provider, model) == expected
+        _strip_model_default(cfg)
+        data = yaml.safe_load(cfg.read_text())
+        assert data["plugins"]["enabled"] == ["zalo-personal-platform"]
