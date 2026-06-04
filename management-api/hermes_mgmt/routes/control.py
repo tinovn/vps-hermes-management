@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
 from pathlib import Path
@@ -25,6 +26,12 @@ _HERMES_EXTRAS = "[web,messaging,cron,voice,mcp,honcho]"
 _MGMT_DIR = "/opt/hermes-mgmt"
 _MGMT_VENV_UV = "/opt/hermes-mgmt/.venv/bin/uv"
 _MGMT_REPO_RAW = "https://raw.githubusercontent.com/tinovn/vps-hermes-management/main"
+_GH_API = "https://api.github.com/repos/tinovn/vps-hermes-management"
+_GH_REF = "main"
+# Static base files (package core + pyproject). Everything under routes/,
+# config/rules and config/roles is discovered DYNAMICALLY via the GitHub
+# contents API at upgrade time — so new routes/rules/roles never need to be
+# added here by hand.
 _MGMT_FILES = (
     "pyproject.toml",
     "hermes_mgmt/__init__.py",
@@ -37,36 +44,6 @@ _MGMT_FILES = (
     "hermes_mgmt/systemd_ctl.py",
     "hermes_mgmt/cli_runner.py",
     "hermes_mgmt/hermes_fs.py",
-    "hermes_mgmt/routes/__init__.py",
-    "hermes_mgmt/routes/status.py",
-    "hermes_mgmt/routes/control.py",
-    "hermes_mgmt/routes/config_routes.py",
-    "hermes_mgmt/routes/channels.py",
-    "hermes_mgmt/routes/cron_routes.py",
-    "hermes_mgmt/routes/logs.py",
-    "hermes_mgmt/routes/auth_routes.py",
-    "hermes_mgmt/routes/env_routes.py",
-    "hermes_mgmt/routes/cli_routes.py",
-    "hermes_mgmt/routes/zalo.py",
-    "hermes_mgmt/routes/openviking.py",
-    "hermes_mgmt/routes/codex.py",
-    "hermes_mgmt/routes/roles.py",
-)
-
-# Role/rule policy config the roles API reads (config/rules/*.md + roles/*.yaml).
-_MGMT_CONFIG_FILES = (
-    "config/rules/a-identity.md",
-    "config/rules/b-account-safety.md",
-    "config/rules/c-anti-spam-content.md",
-    "config/rules/d-security-privacy.md",
-    "config/rules/e-marketing-sales.md",
-    "config/rules/f-conversation-quality.md",
-    "config/rules/g-tools-actions.md",
-    "config/rules/h-operations-escalation.md",
-    "config/roles/cskh.yaml",
-    "config/roles/sales.yaml",
-    "config/roles/marketing.yaml",
-    "config/roles/receptionist.yaml",
 )
 
 
@@ -192,39 +169,57 @@ async def _do_upgrade_mgmt(settings: Settings) -> None:
                 stderr_b.decode(errors="replace"),
             )
         else:
-            # Re-fetch the known base files PLUS every route already on disk, so
-            # routes added after this installer shipped (zalo/codex/roles/...)
-            # are refreshed too and __init__.py never imports a missing module.
-            routes_on_disk = {
-                f"hermes_mgmt/routes/{p.name}"
-                for p in (mgmt_path / "hermes_mgmt" / "routes").glob("*.py")
-            }
-            files = list(dict.fromkeys([*_MGMT_FILES, *sorted(routes_on_disk)]))
-            logger.info("mgmt upgrade: re-downloading %d py files from raw URL", len(files))
-            for rel in files:
-                dest = mgmt_path / rel
+            # Fully DYNAMIC refresh — list directories via the GitHub contents
+            # API instead of any hardcoded file list, so new routes/rules/roles
+            # added upstream are always pulled (no list to keep in sync).
+            # Base files (pyproject, package modules) still come from the small
+            # static set; everything under routes/, config/rules, config/roles
+            # is discovered live.
+            async def _fetch(rel_repo_path: str, dest: Path) -> bool:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 proc = await asyncio.create_subprocess_exec(
-                    "curl", "-fsSL",
-                    f"{_MGMT_REPO_RAW}/management-api/{rel}",
-                    "-o", str(dest),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                _, stderr_b = await proc.communicate()
-                if proc.returncode != 0:
-                    logger.error("mgmt fetch failed: %s — %s", rel, stderr_b.decode(errors="replace"))
-
-            # Config files (rules + roles) live at repo root, not under
-            # management-api/. Best-effort: don't fail the upgrade if missing.
-            for rel in _MGMT_CONFIG_FILES:
-                dest = mgmt_path / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                proc = await asyncio.create_subprocess_exec(
-                    "curl", "-fsSL", f"{_MGMT_REPO_RAW}/{rel}", "-o", str(dest),
+                    "curl", "-fsSL", f"{_MGMT_REPO_RAW}/{rel_repo_path}", "-o", str(dest),
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 )
-                await proc.communicate()
+                _, err = await proc.communicate()
+                if proc.returncode != 0:
+                    logger.error("mgmt fetch failed: %s — %s", rel_repo_path, err.decode(errors="replace"))
+                    return False
+                return True
+
+            # 1. Static base files (package core + pyproject).
+            for rel in _MGMT_FILES:
+                await _fetch(f"management-api/{rel}", mgmt_path / rel)
+
+            # 2. Dynamic dirs via GitHub contents API (no jq; parse names).
+            async def _gh_list(repo_subdir: str) -> list[str]:
+                api = f"{_GH_API}/contents/{repo_subdir}?ref={_GH_REF}"
+                proc = await asyncio.create_subprocess_exec(
+                    "curl", "-fsSL", "-H", "Accept: application/vnd.github+json", api,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                out, _ = await proc.communicate()
+                if proc.returncode != 0:
+                    logger.warning("GitHub list failed for %s", repo_subdir)
+                    return []
+                try:
+                    items = json.loads(out.decode(errors="replace"))
+                    return [it["name"] for it in items if it.get("type") == "file"]
+                except (json.JSONDecodeError, TypeError, KeyError):
+                    return []
+
+            for subdir in ("management-api/hermes_mgmt/routes", "config/rules", "config/roles"):
+                names = await _gh_list(subdir)
+                # Where these files land locally: routes go under mgmt pkg,
+                # config goes under /opt/hermes-mgmt/config to match roles.py.
+                local_base = mgmt_path / (
+                    "hermes_mgmt/routes" if subdir.endswith("/routes")
+                    else subdir.replace("config/", "config/")
+                )
+                for name in names:
+                    await _fetch(f"{subdir}/{name}", local_base / name)
+                if names:
+                    logger.info("mgmt upgrade: refreshed %s (%d files)", subdir, len(names))
 
         uv_bin = _MGMT_VENV_UV
         if not Path(uv_bin).exists():

@@ -359,17 +359,29 @@ if [[ ! -d .git ]]; then
     done
 
     # Role/rule policy config (the roles API reads config/rules/*.md +
-    # config/roles/*.yaml from /opt/hermes-mgmt/config).
-    for cf in rules/a-identity.md rules/b-account-safety.md \
-              rules/c-anti-spam-content.md rules/d-security-privacy.md \
-              rules/e-marketing-sales.md rules/f-conversation-quality.md \
-              rules/g-tools-actions.md rules/h-operations-escalation.md \
-              roles/cskh.yaml roles/sales.yaml roles/marketing.yaml \
-              roles/receptionist.yaml; do
-      mkdir -p "$(dirname "${MGMT_DIR}/config/${cf}")"
-      curl -fsSL "${MGMT_REPO_RAW}/config/${cf}" -o "${MGMT_DIR}/config/${cf}" \
-        || log "WARN: could not fetch config/${cf} (roles API may be limited)"
-    done
+    # config/roles/*.yaml from /opt/hermes-mgmt/config). Fetch the file list
+    # DYNAMICALLY via the GitHub contents API so new roles/rules added upstream
+    # are always included — no hardcoded list to keep in sync.
+    fetch_config_dir() {
+      local sub="$1"  # rules | roles
+      mkdir -p "${MGMT_DIR}/config/${sub}"
+      local api="https://api.github.com/repos/tinovn/vps-hermes-management/contents/config/${sub}"
+      # Parse "name": "x.md" entries from the JSON (no jq dependency).
+      local names
+      names=$(curl -fsSL "$api" 2>/dev/null | grep -oE '"name": *"[^"]+"' | sed -E 's/"name": *"([^"]+)"/\1/')
+      if [[ -z "$names" ]]; then
+        log "WARN: could not list config/${sub} via GitHub API — roles may be limited"
+        return
+      fi
+      local n
+      for n in $names; do
+        curl -fsSL "${MGMT_REPO_RAW}/config/${sub}/${n}" -o "${MGMT_DIR}/config/${sub}/${n}" \
+          || log "WARN: could not fetch config/${sub}/${n}"
+      done
+      log "Fetched config/${sub}: $(echo "$names" | wc -w | tr -d ' ') files"
+    }
+    fetch_config_dir rules
+    fetch_config_dir roles
   fi
 fi
 
