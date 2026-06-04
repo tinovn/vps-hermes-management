@@ -105,15 +105,21 @@ def test_delete_custom_role(client: TestClient, auth_headers: dict, config_dir) 
 
 
 def test_apply_role_builds_persona(
-    client: TestClient, auth_headers: dict, config_dir, test_settings: Settings
+    client: TestClient, auth_headers: dict, config_dir, test_settings: Settings, tmp_path
 ) -> None:
+    # Point the plugin session dir at a temp folder so we can read bot_persona.json.
+    from hermes_mgmt.env_file import set_env
+
+    sess = tmp_path / "zalo-session"
+    set_env(test_settings.hermes_home / ".env", "ZALO_PERSONAL_SESSION_DIR", str(sess))
     with patch("hermes_mgmt.routes.roles.restart", AsyncMock(return_value=(0, "ok"))):
         resp = client.post("/api/roles/cskh/apply", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["applied"] is True
-    # persona file written with persona + rule bodies
-    persona = (test_settings.hermes_home / "persona.md").read_text(encoding="utf-8")
+    # persona written into the plugin's bot_persona.json (field `personality`)
+    persona_obj = json.loads((sess / "bot_persona.json").read_text(encoding="utf-8"))
+    persona = persona_obj["personality"]
     assert "Bạn là trợ lý CSKH." in persona
     assert "Luôn xưng là trợ lý của sếp." in persona  # rule a-identity body
     assert "Trả lời đúng trọng tâm." in persona       # rule f body
@@ -122,7 +128,12 @@ def test_apply_role_builds_persona(
     assert active["id"] == "cskh"
 
 
-def test_active_role(client: TestClient, auth_headers: dict, config_dir, test_settings: Settings) -> None:
+def test_active_role(
+    client: TestClient, auth_headers: dict, config_dir, test_settings: Settings, tmp_path
+) -> None:
+    from hermes_mgmt.env_file import set_env
+
+    set_env(test_settings.hermes_home / ".env", "ZALO_PERSONAL_SESSION_DIR", str(tmp_path / "z"))
     with patch("hermes_mgmt.routes.roles.restart", AsyncMock(return_value=(0, "ok"))):
         client.post("/api/roles/cskh/apply", headers=auth_headers)
     resp = client.get("/api/roles/active", headers=auth_headers)

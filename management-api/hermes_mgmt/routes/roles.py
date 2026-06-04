@@ -28,6 +28,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, st
 
 from hermes_mgmt.config import Settings
 from hermes_mgmt.deps import get_settings_dep, require_auth
+from hermes_mgmt.env_file import read_env
 from hermes_mgmt.models import ApiResponse
 from hermes_mgmt.systemd_ctl import restart
 
@@ -67,8 +68,18 @@ def _custom_roles_dir(settings: Settings) -> Path:
     return d
 
 
-def _persona_file(settings: Settings) -> Path:
-    return settings.hermes_home / "persona.md"
+def _bot_persona_file(settings: Settings) -> Path:
+    """Where the Zalo plugin reads the bot persona from.
+
+    The plugin's _load_bot_persona() reads
+    $ZALO_PERSONAL_SESSION_DIR/bot_persona.json (default /opt/data/zalo) with
+    fields {name, self_intro, personality}. We write the assembled role text
+    into `personality` so the bot actually adopts it.
+    """
+    merged = read_env(settings.env_file)
+    merged.update(read_env(settings.hermes_home / ".env"))
+    session_dir = merged.get("ZALO_PERSONAL_SESSION_DIR", "").strip() or "/opt/data/zalo"
+    return Path(session_dir) / "bot_persona.json"
 
 
 def _active_file(settings: Settings) -> Path:
@@ -297,7 +308,21 @@ async def apply_role(
         raise HTTPException(status_code=404, detail=f"Role '{role_id}' không tồn tại.")
 
     persona_text = _build_persona(settings, role)
-    _persona_file(settings).write_text(persona_text, encoding="utf-8")
+
+    # Write into the plugin's bot_persona.json (field `personality`), merging so
+    # we keep any existing name/self_intro the owner set via zalo_set_persona.
+    pf = _bot_persona_file(settings)
+    pf.parent.mkdir(parents=True, exist_ok=True)
+    persona_obj: dict = {}
+    if pf.exists():
+        try:
+            persona_obj = json.loads(pf.read_text(encoding="utf-8"))
+            if not isinstance(persona_obj, dict):
+                persona_obj = {}
+        except (json.JSONDecodeError, OSError):
+            persona_obj = {}
+    persona_obj["personality"] = persona_text
+    pf.write_text(json.dumps(persona_obj, ensure_ascii=False, indent=2), encoding="utf-8")
 
     import datetime
 
@@ -321,7 +346,7 @@ async def apply_role(
         data={
             "id": role_id,
             "applied": True,
-            "persona_file": str(_persona_file(settings)),
+            "persona_file": str(pf),
             "rules": role.get("rules", []),
             "persona_preview": persona_text[:400],
         },
