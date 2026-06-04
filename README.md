@@ -8,7 +8,7 @@ Inspired by the OpenClaw deployment pattern, rewritten around Hermes's Python st
 
 - **One-command install** — `curl … | bash` sets up Hermes + dashboard + mgmt API in ~3 min
 - **No Docker** — runs directly on the OS via systemd, saves 200-500 MB RAM
-- **FastAPI Management API** — 69 endpoints for status/config/channels/cron/logs/CLI/Zalo/OpenViking/Codex/Roles (smoke-tested 34/34 PASS, see [#api-test-results](#api-test-results))
+- **FastAPI Management API** — 73 endpoints for status/config/channels/cron/logs/CLI/Zalo/OpenViking/Codex/Roles (smoke-tested 34/34 PASS, see [#api-test-results](#api-test-results))
 - **15 provider templates** — Anthropic, OpenAI, Google, xAI, DeepSeek, Groq, Mistral, Together, Nous Portal, OpenRouter, HuggingFace, Kimi, MiMo, MiniMax, z.ai
 - **6 messaging channels** — Telegram, Discord, Slack, Signal, WhatsApp, Email
 - **Auto SSL** — Let's Encrypt via Caddy, self-signed fallback when DNS isn't ready
@@ -203,7 +203,7 @@ Every JSON response uses the same shape:
 
 Validation errors return FastAPI's standard `422` with `{ "detail": [...] }`.
 
-### Endpoint catalog (69 routes)
+### Endpoint catalog (73 routes)
 
 #### 1) Health & info (public + bearer)
 
@@ -370,63 +370,62 @@ curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" -H "Content-Type: applicati
 # { "ok": true, "data": {"exit_code": 0, "stdout": "Hermes Agent v0.13.0 …", "stderr": ""}, "error": null }
 ```
 
-#### 10) Zalo personal connect (4)
+#### 10) Zalo personal connect (6)
 
 The Zalo plugin ships a Node.js sidecar (zca-js) bound to `127.0.0.1:3838` —
 **unreachable from outside the VPS**. These routes proxy it through the
 Management API so a low-tech user connects Zalo entirely from the dashboard:
-**click connect → scan the QR shown on the page → done**. No SSH, no `curl`, no
-hunting for a Zalo UID.
+**scan QR → enter the boss's phone → done**. No SSH, no `curl`, no UID hunting.
 
-**Chicken-and-egg solved.** The Hermes plugin only spawns the sidecar once
-`ZALO_PERSONAL_OWNER_UID` is set, but the UID is only knowable *after* a QR
-login. So `/connect` spawns the sidecar itself (detached) for the QR step. When
-the scan succeeds, `/status` learns the uid, persists it, enables the plugin in
-`config.yaml`, and restarts the gateway — which then takes over the sidecar
-(the login session persists on disk, so it survives the handover).
+**Bot vs owner (important):** the QR-scanned account is the **BOT** (a secondary
+number that sends/receives on the bot's behalf). The **owner** is the **boss** —
+a *different* Zalo account who messages the bot to give admin commands. So after
+QR login you must tell the API who the owner is, by **phone number** (the API
+resolves it to a UID via the sidecar). The Hermes plugin won't run the platform
+until `ZALO_PERSONAL_OWNER_UID` is set; setting the owner enables the plugin and
+restarts the gateway, which then manages the sidecar (login persists on disk).
 
 | Method | Path | Body | Description |
 |---|---|---|---|
-| POST | `/api/zalo/connect` | — | Start QR login. Spawns the sidecar if needed. Returns `{status:"pending", qr_url:"/api/zalo/qr"}` (or `{status:"connected"}` if already logged in). `503` if the sidecar can't start (Node missing / plugin not installed) |
-| GET | `/api/zalo/qr` | — | Raw QR **PNG bytes** (not the JSON envelope) — use directly as `<img src>`. `404` while the QR is still generating; retry for 1–2s after `/connect` |
-| GET | `/api/zalo/status` | — | Connection state — poll this. `data.status` ∈ `disconnected, pending, scanned, connected, error`. On first `connected`, persists the uid + enables the plugin + restarts gateway (`data.activating=true` during that handover). `data.sidecar=false` means the Node sidecar isn't up yet |
+| POST | `/api/zalo/connect` | — | Start QR login. Spawns the sidecar if needed. `{status:"pending", qr_url:"/api/zalo/qr"}` (or `{status:"connected", bot_uid}` if already logged in). `503` if sidecar can't start |
+| GET | `/api/zalo/qr` | — | Raw QR **PNG bytes** (use as `<img src>`). `404` while QR still generating; retry 1–2s after `/connect` |
+| GET | `/api/zalo/status` | — | Poll this. `data`: `status` ∈ `disconnected/pending/scanned/connected/error`, `bot_uid` (the scanned bot account — **not** the owner), `name`, `sidecar` (bool), `owner_set` (bool — has the boss's owner UID been configured) |
+| POST | `/api/zalo/set-owner` | `{phone}` or `{uid}` | Set the boss as owner. `phone` is resolved to a UID via the connected sidecar (`/users/by-phones`); `uid` sets it directly. Then enables the plugin + restarts gateway. `409` if bot not logged in, `404` if phone has no Zalo account |
+| GET | `/api/zalo/owner` | — | Current owner: `{owner_uid, owner_set}` |
 | POST | `/api/zalo/disconnect` | — | Logout + clear the Zalo session |
-
-`/status` data fields: `status`, `uid`, `name`, `error`, `sidecar` (bool — is
-the Node process reachable), `activating` (bool — gateway handover in progress).
 
 Dashboard flow:
 
 ```
 [Kết nối Zalo]  → POST /api/zalo/connect
                 → poll GET /api/zalo/status every ~2s
-   pending      → show <img src="/api/zalo/qr"> + "Quét bằng app Zalo (Cài đặt → Zalo Web)"
-   scanned      → "Đã quét, đang xác thực…"
-   connected    → "✅ Đã kết nối: {name}"  + [Ngắt kết nối]
-                  (activating=true briefly while the gateway takes over)
-   error        → show error + retry
+   pending      → show <img src="/api/zalo/qr"> + "Quét bằng app Zalo (số phụ)"
+   connected, owner_set=false
+                → ask: "Nhập số Zalo của SẾP (người điều khiển bot)"
+                → POST /api/zalo/set-owner {phone}
+   owner_set=true → "✅ Bot sẵn sàng. Sếp nhắn bot để ra lệnh; khách nhắn được tiếp."
 ```
 
 ```bash
-# 1. Start QR login (spawns sidecar)
-curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" \
-  http://localhost:9997/api/zalo/connect
-# { "ok": true, "data": {"status": "pending", "qr_url": "/api/zalo/qr"}, "error": null }
+# 1. Start QR login (spawns sidecar), then render /api/zalo/qr; scan with the
+#    SECONDARY Zalo number that will be the bot.
+curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" http://localhost:9997/api/zalo/connect
 
-# 2. Fetch the QR image (render in the dashboard, or save + open)
-curl -s -H "Authorization: Bearer $MGMT_KEY" \
-  http://localhost:9997/api/zalo/qr -o zalo-qr.png   # 16–17 KB PNG
+# 2. Poll until connected (bot_uid = the bot account, NOT the owner)
+curl -s -H "Authorization: Bearer $MGMT_KEY" http://localhost:9997/api/zalo/status
+# { "ok": true, "data": {"status":"connected","bot_uid":"555","sidecar":true,"owner_set":false}, ... }
 
-# 3. Poll until connected
-curl -s -H "Authorization: Bearer $MGMT_KEY" \
-  http://localhost:9997/api/zalo/status
-# { "ok": true, "data": {"status": "connected", "uid": "98765", "name": "Sếp",
-#                        "sidecar": true, "activating": false}, "error": null }
+# 3. Set the boss as owner by their phone number (resolved to a UID by the bot)
+curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" -H "Content-Type: application/json" \
+  -d '{"phone":"0901234567"}' http://localhost:9997/api/zalo/set-owner
+# { "ok": true, "data": {"owner_uid":"boss123","owner_set":true}, "error": null }
 ```
 
-> ⚠️ Unofficial Zalo Web API. **Use a secondary number** — bulk friend/message
-> actions risk account bans. The plugin is installed + enabled by default
-> (`--skip-zalo` to opt out). See `/root/.hermes/plugins/zalo-personal/README.md`.
+> ⚠️ Unofficial Zalo Web API. **Use a secondary number for the bot** — bulk
+> friend/message actions risk account bans. Installed + enabled by default
+> (`--skip-zalo` to opt out). Anyone can chat the bot without per-user approval
+> (`ZALO_PERSONAL_ALLOW_ALL_USERS=true`); the owner gets admin commands.
+> See `/root/.hermes/plugins/zalo-personal/README.md`.
 
 #### 11) OpenViking memory backend (12)
 
@@ -480,7 +479,7 @@ curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" \
   http://localhost:9997/api/openviking/enable
 ```
 
-#### 12) OpenAI Codex OAuth (3)
+#### 12) OpenAI Codex OAuth (4)
 
 Log the bot into **OpenAI Codex** (provider `openai-codex`) without an API key,
 straight from the dashboard. Codex uses a **device-code** flow: the API starts
@@ -494,6 +493,7 @@ automatically.
 | POST | `/api/codex/auth/start` | — | Start device-code login. Returns `{status:"pending", url, code}` — show both to the user. The process keeps polling in the background |
 | GET | `/api/codex/auth/status` | — | `disconnected` / `pending` (with `url`+`code`) / `connected`. On first `connected`, sets `config.yaml` model.provider=codex + restarts gateway |
 | POST | `/api/codex/auth/import` | `{auth_json}` | Fallback — paste an `auth.json` from Codex CLI / another machine instead of the device flow. Validates it has a codex entry, then sets model + restarts |
+| POST | `/api/codex/auth/disable` | `{to_provider?}` | Disconnect Codex: `hermes auth remove openai-codex`, clear codex from `auth.json` + `active_provider`, repoint `config.yaml` model.provider (to `to_provider` or none), restart gateway. Needed because Codex's `active_provider` overrides config — without removing it the dashboard can't switch providers |
 
 Dashboard flow:
 
