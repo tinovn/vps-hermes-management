@@ -47,6 +47,26 @@ _MGMT_FILES = (
     "hermes_mgmt/routes/auth_routes.py",
     "hermes_mgmt/routes/env_routes.py",
     "hermes_mgmt/routes/cli_routes.py",
+    "hermes_mgmt/routes/zalo.py",
+    "hermes_mgmt/routes/openviking.py",
+    "hermes_mgmt/routes/codex.py",
+    "hermes_mgmt/routes/roles.py",
+)
+
+# Role/rule policy config the roles API reads (config/rules/*.md + roles/*.yaml).
+_MGMT_CONFIG_FILES = (
+    "config/rules/a-identity.md",
+    "config/rules/b-account-safety.md",
+    "config/rules/c-anti-spam-content.md",
+    "config/rules/d-security-privacy.md",
+    "config/rules/e-marketing-sales.md",
+    "config/rules/f-conversation-quality.md",
+    "config/rules/g-tools-actions.md",
+    "config/rules/h-operations-escalation.md",
+    "config/roles/cskh.yaml",
+    "config/roles/sales.yaml",
+    "config/roles/marketing.yaml",
+    "config/roles/receptionist.yaml",
 )
 
 
@@ -172,8 +192,16 @@ async def _do_upgrade_mgmt(settings: Settings) -> None:
                 stderr_b.decode(errors="replace"),
             )
         else:
-            logger.info("mgmt upgrade: re-downloading %d files from raw URL", len(_MGMT_FILES))
-            for rel in _MGMT_FILES:
+            # Re-fetch the known base files PLUS every route already on disk, so
+            # routes added after this installer shipped (zalo/codex/roles/...)
+            # are refreshed too and __init__.py never imports a missing module.
+            routes_on_disk = {
+                f"hermes_mgmt/routes/{p.name}"
+                for p in (mgmt_path / "hermes_mgmt" / "routes").glob("*.py")
+            }
+            files = list(dict.fromkeys([*_MGMT_FILES, *sorted(routes_on_disk)]))
+            logger.info("mgmt upgrade: re-downloading %d py files from raw URL", len(files))
+            for rel in files:
                 dest = mgmt_path / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 proc = await asyncio.create_subprocess_exec(
@@ -186,6 +214,17 @@ async def _do_upgrade_mgmt(settings: Settings) -> None:
                 _, stderr_b = await proc.communicate()
                 if proc.returncode != 0:
                     logger.error("mgmt fetch failed: %s — %s", rel, stderr_b.decode(errors="replace"))
+
+            # Config files (rules + roles) live at repo root, not under
+            # management-api/. Best-effort: don't fail the upgrade if missing.
+            for rel in _MGMT_CONFIG_FILES:
+                dest = mgmt_path / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                proc = await asyncio.create_subprocess_exec(
+                    "curl", "-fsSL", f"{_MGMT_REPO_RAW}/{rel}", "-o", str(dest),
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.communicate()
 
         uv_bin = _MGMT_VENV_UV
         if not Path(uv_bin).exists():
