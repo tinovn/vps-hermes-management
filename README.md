@@ -8,7 +8,7 @@ Inspired by the OpenClaw deployment pattern, rewritten around Hermes's Python st
 
 - **One-command install** — `curl … | bash` sets up Hermes + dashboard + mgmt API in ~3 min
 - **No Docker** — runs directly on the OS via systemd, saves 200-500 MB RAM
-- **FastAPI Management API** — 42 endpoints for status/config/channels/cron/logs/CLI (smoke-tested 34/34 PASS, see [#api-test-results](#api-test-results))
+- **FastAPI Management API** — 46 endpoints for status/config/channels/cron/logs/CLI/Zalo (smoke-tested 34/34 PASS, see [#api-test-results](#api-test-results))
 - **15 provider templates** — Anthropic, OpenAI, Google, xAI, DeepSeek, Groq, Mistral, Together, Nous Portal, OpenRouter, HuggingFace, Kimi, MiMo, MiniMax, z.ai
 - **6 messaging channels** — Telegram, Discord, Slack, Signal, WhatsApp, Email
 - **Auto SSL** — Let's Encrypt via Caddy, self-signed fallback when DNS isn't ready
@@ -203,7 +203,7 @@ Every JSON response uses the same shape:
 
 Validation errors return FastAPI's standard `422` with `{ "detail": [...] }`.
 
-### Endpoint catalog (42 routes)
+### Endpoint catalog (46 routes)
 
 #### 1) Health & info (public + bearer)
 
@@ -369,6 +369,52 @@ curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" -H "Content-Type: applicati
   http://localhost:9997/api/cli
 # { "ok": true, "data": {"exit_code": 0, "stdout": "Hermes Agent v0.13.0 …", "stderr": ""}, "error": null }
 ```
+
+#### 10) Zalo personal connect (4)
+
+The Zalo plugin ships a Node.js sidecar (zca-js) the gateway spawns on
+`127.0.0.1:3838` — **unreachable from outside the VPS**. These routes proxy the
+sidecar through the Management API so a low-tech user connects Zalo entirely
+from the dashboard: **click connect → scan the QR shown on the page → done**.
+No SSH, no `curl`, no hunting for a Zalo UID (the owner UID is auto-saved to
+`.env` on successful connect).
+
+| Method | Path | Body | Description |
+|---|---|---|---|
+| GET | `/api/zalo/status` | — | Connection state — poll this. `data.status` ∈ `disconnected, pending, scanned, connected, error`. On `connected`, auto-persists `ZALO_PERSONAL_OWNER_UID`. `data.sidecar=false` means the Node sidecar isn't up yet |
+| POST | `/api/zalo/connect` | — | Start QR login. Returns immediately with `{status:"pending", qr_url:"/api/zalo/qr"}` (or `{status:"connected"}` if already logged in) |
+| GET | `/api/zalo/qr` | — | Raw QR **PNG bytes** (not the JSON envelope) — use directly as `<img src>`. `404` while the QR is still generating; retry for 1–2s after `/connect` |
+| POST | `/api/zalo/disconnect` | — | Logout + clear the Zalo session |
+
+Dashboard flow:
+
+```
+[Kết nối Zalo]  → POST /api/zalo/connect
+                → poll GET /api/zalo/status every ~2s
+   pending      → show <img src="/api/zalo/qr"> + "Quét bằng app Zalo (Cài đặt → Zalo Web)"
+   scanned      → "Đã quét, đang xác thực…"
+   connected    → "✅ Đã kết nối: {name}"  + [Ngắt kết nối]
+   error        → show error + retry
+```
+
+```bash
+# Start QR login
+curl -s -X POST -H "Authorization: Bearer $MGMT_KEY" \
+  http://localhost:9997/api/zalo/connect
+# { "ok": true, "data": {"status": "pending", "qr_url": "/api/zalo/qr"}, "error": null }
+
+# Fetch the QR image (save + open it, or render in the dashboard)
+curl -s -H "Authorization: Bearer $MGMT_KEY" \
+  http://localhost:9997/api/zalo/qr -o zalo-qr.png
+
+# Poll until connected
+curl -s -H "Authorization: Bearer $MGMT_KEY" \
+  http://localhost:9997/api/zalo/status
+# { "ok": true, "data": {"status": "connected", "uid": "98765", "name": "Sếp", "sidecar": true}, "error": null }
+```
+
+> ⚠️ Unofficial Zalo Web API. **Use a secondary number** — bulk friend/message
+> actions risk account bans. See `/root/.hermes/plugins/zalo-personal/README.md`.
 
 ### API test results
 
