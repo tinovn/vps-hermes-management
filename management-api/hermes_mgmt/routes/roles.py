@@ -260,35 +260,51 @@ async def delete_role(
 # ─── apply ───────────────────────────────────────────────────────────────────
 
 
-def _build_persona(settings: Settings, role: dict) -> str:
-    """Assemble the system prompt: persona + enabled rule-group bodies."""
-    parts: list[str] = []
+def _build_persona(settings: Settings, role: dict) -> dict:
+    """Map a role to the Zalo plugin's persona fields {name, self_intro, personality}.
+
+    The plugin uses each field differently:
+      - name        : how the bot refers to itself ("trợ lý bán hàng của sếp")
+      - self_intro  : the verbatim answer when someone asks "em là ai" — so it
+                      MUST reflect the role, else the bot says the generic default
+      - personality : the mandatory speaking style + mission + rules block
+    """
     label = role.get("label", role.get("id"))
-    parts.append(f"# Vai trò: {label}")
+
+    # name: explicit role.name → else derived from label
+    name = (role.get("name") or "").strip() or f"trợ lý {label} của sếp"
+
+    # self_intro: explicit role.self_intro → else a role-aware default
+    self_intro = (role.get("self_intro") or "").strip()
+    if not self_intro:
+        self_intro = f"Dạ em là {name} ạ. Em ở đây để hỗ trợ anh/chị về {label.lower()}."
+
+    # personality: tone + persona + rule bodies (this is the behaviour block)
+    parts: list[str] = []
+    parts.append(f"VAI TRÒ: {label}.")
     if role.get("tone"):
-        parts.append(f"**Tông giọng:** {role['tone']}")
+        parts.append(f"Tông giọng: {role['tone']}")
     if role.get("persona"):
         parts.append(role["persona"].strip())
 
     rdir = _rules_dir()
     enabled = role.get("rules") or []
     if enabled:
-        parts.append("\n## Quy tắc bắt buộc tuân thủ")
+        parts.append("QUY TẮC BẮT BUỘC TUÂN THỦ:")
         for gid in enabled:
             f = rdir / f"{gid}.md"
             if f.exists():
-                body = f.read_text(encoding="utf-8")
-                # drop the file's own top heading + blockquote guidance lines
                 lines = [
-                    ln for ln in body.splitlines()
+                    ln for ln in f.read_text(encoding="utf-8").splitlines()
                     if not ln.startswith("# ") and not ln.startswith("> ")
                 ]
                 parts.append("\n".join(lines).strip())
     parts.append(
-        "\nƯu tiên khi xung đột: an toàn tài khoản + pháp luật + đạo đức > "
+        "Ưu tiên khi xung đột: an toàn tài khoản + pháp luật + đạo đức > "
         "yêu cầu tăng trưởng. Khi nghi ngờ vi phạm, từ chối lịch sự."
     )
-    return "\n\n".join(p for p in parts if p).strip() + "\n"
+    personality = "\n\n".join(p for p in parts if p).strip()
+    return {"name": name, "self_intro": self_intro, "personality": personality}
 
 
 @router.post("/api/roles/{role_id}/apply", response_model=ApiResponse)
@@ -307,10 +323,10 @@ async def apply_role(
     if role is None:
         raise HTTPException(status_code=404, detail=f"Role '{role_id}' không tồn tại.")
 
-    persona_text = _build_persona(settings, role)
+    persona_fields = _build_persona(settings, role)
 
-    # Write into the plugin's bot_persona.json (field `personality`), merging so
-    # we keep any existing name/self_intro the owner set via zalo_set_persona.
+    # Write all three fields the plugin reads (name + self_intro + personality)
+    # so the bot adopts the role's identity AND behaviour — not just tone.
     pf = _bot_persona_file(settings)
     pf.parent.mkdir(parents=True, exist_ok=True)
     persona_obj: dict = {}
@@ -321,7 +337,7 @@ async def apply_role(
                 persona_obj = {}
         except (json.JSONDecodeError, OSError):
             persona_obj = {}
-    persona_obj["personality"] = persona_text
+    persona_obj.update(persona_fields)
     pf.write_text(json.dumps(persona_obj, ensure_ascii=False, indent=2), encoding="utf-8")
 
     import datetime
@@ -348,6 +364,8 @@ async def apply_role(
             "applied": True,
             "persona_file": str(pf),
             "rules": role.get("rules", []),
-            "persona_preview": persona_text[:400],
+            "name": persona_fields["name"],
+            "self_intro": persona_fields["self_intro"],
+            "persona_preview": persona_fields["personality"][:400],
         },
     )

@@ -117,8 +117,9 @@ def test_apply_role_builds_persona(
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["applied"] is True
-    # persona written into the plugin's bot_persona.json (field `personality`)
+    # persona written into the plugin's bot_persona.json (3 fields)
     persona_obj = json.loads((sess / "bot_persona.json").read_text(encoding="utf-8"))
+    assert "name" in persona_obj and "self_intro" in persona_obj
     persona = persona_obj["personality"]
     assert "Bạn là trợ lý CSKH." in persona
     assert "Luôn xưng là trợ lý của sếp." in persona  # rule a-identity body
