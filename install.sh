@@ -14,6 +14,7 @@
 #   --ref        Hermes git ref (branch/tag/SHA, default: main)
 #   --skip-hermes  Skip Hermes Agent install (useful for mgmt-api-only updates)
 #   --with-rag   Install the local RAG MCP service + register it with Hermes
+#   --skip-zalo  Skip the Zalo personal plugin (installed by default)
 # =============================================================================
 
 set -euo pipefail
@@ -38,12 +39,18 @@ readonly RAG_EMBED_MODEL_DEFAULT="sentence-transformers/paraphrase-multilingual-
 readonly HERMES_EXTRAS="web,messaging,cron,voice,mcp,honcho"
 readonly PYTHON_PIN="3.11"
 
+# Zalo personal plugin (unofficial Zalo Web API via zca-js Node sidecar).
+# Installed by default into the gateway's HERMES_HOME plugins dir; skip with --skip-zalo.
+readonly ZALO_PLUGIN_REPO="https://github.com/tinovn/hermes-zalo-plugin"
+readonly ZALO_PLUGIN_NAME="zalo-personal"
+
 # ---- Args -----------------------------------------------------------------
 MGMT_API_KEY_ARG=""
 DOMAIN_ARG=""
 HERMES_REF="main"
 SKIP_HERMES=false
 WITH_RAG=true
+WITH_ZALO=true
 while [[ $# -gt 0 ]]; do
   case $1 in
     --mgmt-key)   MGMT_API_KEY_ARG="$2"; shift 2 ;;
@@ -51,6 +58,7 @@ while [[ $# -gt 0 ]]; do
     --ref)        HERMES_REF="$2"; shift 2 ;;
     --skip-hermes) SKIP_HERMES=true; shift ;;
     --with-rag)   WITH_RAG=true; shift ;;
+    --skip-zalo)  WITH_ZALO=false; shift ;;
     -h|--help)
       sed -n '3,14p' "$0" | sed 's/^# //' | sed 's/^#$//'
       exit 0 ;;
@@ -356,6 +364,39 @@ fi
 VIRTUAL_ENV="${MGMT_DIR}/.venv" uv pip install --python "${MGMT_DIR}/.venv/bin/python" \
   -e "${MGMT_DIR}"
 
+# ---- 11b. Install Zalo personal plugin -----------------------------------
+# Hermes discovers plugins from ${HERMES_HOME}/plugins/<name>/. Our gateway
+# service runs as User=root with HOME unset, so HERMES_HOME resolves to
+# /root/.hermes — that is where the gateway looks. The plugin ships a Python
+# adapter + a Node.js sidecar (zca-js) that the gateway spawns as a child.
+if [[ "$WITH_ZALO" == "true" && "$SKIP_HERMES" != "true" ]]; then
+  step "11b. Install Zalo personal plugin"
+  ZALO_PLUGIN_DIR="/root/.hermes/plugins/${ZALO_PLUGIN_NAME}"
+  mkdir -p "$(dirname "${ZALO_PLUGIN_DIR}")"
+  if [[ ! -d "${ZALO_PLUGIN_DIR}/.git" ]]; then
+    rm -rf "${ZALO_PLUGIN_DIR}"
+    git clone --depth 1 "${ZALO_PLUGIN_REPO}" "${ZALO_PLUGIN_DIR}" \
+      || log "WARN: Zalo plugin clone failed — skipping (set up later by hand)"
+  else
+    git -C "${ZALO_PLUGIN_DIR}" pull --ff-only 2>/dev/null || true
+  fi
+
+  if [[ -f "${ZALO_PLUGIN_DIR}/sidecar/package.json" ]]; then
+    log "Installing Zalo sidecar Node deps (zca-js)..."
+    pushd "${ZALO_PLUGIN_DIR}/sidecar" >/dev/null
+    npm install --no-audit --no-fund --loglevel=error \
+      || log "WARN: Zalo sidecar npm install failed — run it manually before use"
+    popd >/dev/null
+    # Default session/data dir for the sidecar (overridable via .env).
+    mkdir -p /opt/data/zalo
+    log "Zalo plugin installed at ${ZALO_PLUGIN_DIR}"
+  else
+    log "WARN: Zalo plugin sources incomplete — sidecar not built"
+  fi
+else
+  log "Skipping Zalo plugin (--skip-zalo or --skip-hermes)"
+fi
+
 # ---- 12. Generate tokens + .env ------------------------------------------
 # Token precedence (highest -> lowest):
 #   1. Existing value in ${INSTALL_DIR}/.env (pre-seeded by bootstrap.sh /
@@ -431,6 +472,22 @@ HERMES_AUTH_TOKEN=${AUTH_TOKEN}
 # SLACK_BOT_TOKEN=
 # SLACK_APP_TOKEN=
 # SIGNAL_ACCOUNT=
+
+# --- Zalo personal plugin (zalo-personal) ---
+# Unofficial Zalo Web API via zca-js Node sidecar. USE A SECONDARY NUMBER —
+# bulk friend/message actions risk account bans. First run needs QR login:
+#   curl -X POST http://127.0.0.1:3838/login/qr  &&  open http://127.0.0.1:3838/qr.png
+# Required: owner Zalo UID (message the bot once, then grep gateway log for from_uid=).
+ZALO_PERSONAL_OWNER_UID=
+ZALO_PERSONAL_SIDECAR_PORT=3838
+ZALO_PERSONAL_SESSION_DIR=/opt/data/zalo
+# Optional:
+# ZALO_PERSONAL_ALLOWED_USERS=
+# ZALO_PERSONAL_PROXY=
+# ZALO_OWNER_NICKNAME=sếp
+# ZALO_OWNER_NAME=
+# GOOGLE_TOKEN_PATH=
+# ZALO_PERSONAL_HOME_THREAD=
 EOF
   chmod 600 "${INSTALL_DIR}/.env"
   log "Wrote ${INSTALL_DIR}/.env (fresh)"
@@ -445,6 +502,25 @@ else
   log "  MGMT_API_KEY : $([[ -n "$EXISTING_MGMT_API_KEY"   ]] && echo "preserved" || echo "appended")"
   log "  SESSION_SECRET: $([[ -n "$EXISTING_SESSION_SECRET" ]] && echo "preserved" || echo "appended")"
   log "  AUTH_TOKEN   : $([[ -n "$EXISTING_AUTH_TOKEN"     ]] && echo "preserved" || echo "appended")"
+  # Seed Zalo plugin env block on re-run if absent (preserve any existing value).
+  if [[ "$WITH_ZALO" == "true" ]] && ! grep -q '^ZALO_PERSONAL_OWNER_UID=' "${INSTALL_DIR}/.env"; then
+    cat >> "${INSTALL_DIR}/.env" <<'ZEOF'
+
+# --- Zalo personal plugin (zalo-personal) — appended by installer ---
+# Unofficial Zalo Web API via zca-js. USE A SECONDARY NUMBER (ban risk).
+# First run QR login: curl -X POST http://127.0.0.1:3838/login/qr ; open /qr.png
+ZALO_PERSONAL_OWNER_UID=
+ZALO_PERSONAL_SIDECAR_PORT=3838
+ZALO_PERSONAL_SESSION_DIR=/opt/data/zalo
+# ZALO_PERSONAL_ALLOWED_USERS=
+# ZALO_PERSONAL_PROXY=
+# ZALO_OWNER_NICKNAME=sếp
+# ZALO_OWNER_NAME=
+# GOOGLE_TOKEN_PATH=
+# ZALO_PERSONAL_HOME_THREAD=
+ZEOF
+    log "  ZALO env block: appended"
+  fi
 fi
 
 # ---- 12b. Install RAG MCP service (optional, --with-rag) ------------------
@@ -622,7 +698,9 @@ Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-MemoryMax=1G
+# 1.5G headroom: the Zalo plugin spawns a Node.js sidecar (zca-js) as a child
+# of this process, so it shares the gateway cgroup memory budget.
+MemoryMax=1536M
 
 [Install]
 WantedBy=multi-user.target
@@ -793,6 +871,16 @@ log "  RAG knowledge base (MCP tool 'rag_search' available in Hermes chat):"
 log "    cp your-docs/* ${RAG_DIR}/docs/   # add md/txt/pdf"
 log "    hermes-rag ingest                 # index them"
 log "    hermes-rag stats                  # verify"
+fi
+if [[ "$WITH_ZALO" == "true" && "$SKIP_HERMES" != "true" ]]; then
+log ""
+log "  Zalo plugin (zalo-personal) — USE A SECONDARY NUMBER (ban risk):"
+log "    1) Set ZALO_PERSONAL_OWNER_UID in ${INSTALL_DIR}/.env, then:"
+log "       systemctl restart hermes-gateway"
+log "    2) QR login (first time only):"
+log "       curl -X POST http://127.0.0.1:3838/login/qr"
+log "       # then open http://127.0.0.1:3838/qr.png and scan with Zalo app"
+log "    Plugin dir: /root/.hermes/plugins/${ZALO_PLUGIN_NAME}"
 fi
 log ""
 log "  Quick health check:"

@@ -123,8 +123,14 @@ hermes_mgmt/
     ├── logs.py          /api/logs, /api/logs/stream (SSE), /api/logs/files
     ├── auth_routes.py   /login, /api/auth/* (login, create-user, change-password, etc.)
     ├── env_routes.py    /api/env, /api/env/{key} (PUT/DELETE)
-    └── cli_routes.py    POST /api/cli — run whitelisted subcommand
+    ├── cli_routes.py    POST /api/cli — run whitelisted subcommand
+    └── zalo.py          /api/zalo/{status,connect,qr,disconnect} — proxy to Zalo Node sidecar (127.0.0.1:3838)
 ```
+
+The Zalo routes proxy the local Node sidecar (bound to 127.0.0.1, unreachable
+externally) through mgmt-api so the dashboard can drive QR login for low-tech
+users: click connect → scan QR shown in the page → owner uid auto-persisted to
+both .env stores. See `routes/zalo.py`.
 
 Response envelope: `ApiResponse(ok: bool, data: Any | None, error: str | None)`.
 
@@ -167,7 +173,7 @@ rag-mcp/hermes_rag/
 
 ## Test invariants (pytest)
 
-- 63 tests under `management-api/tests/` — must all pass before release
+- 80 tests under `management-api/tests/` — must all pass before release
 - No real subprocess calls in tests — everything mocked
 - `fastapi.testclient.TestClient` for HTTP tests
 - Dependency injection for settings override via `app.dependency_overrides[get_settings]`
