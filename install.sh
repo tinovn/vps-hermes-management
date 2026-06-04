@@ -699,7 +699,7 @@ PartOf=hermes.target
 Type=simple
 User=root
 # Leave HOME unset — systemd defaults it to /root for User=root, matching
-# what `hermes gateway setup` writes if an admin ever runs it interactively.
+# what 'hermes gateway setup' writes if an admin ever runs it interactively.
 # Without this match, the CLI would silently rewrite the unit and split the
 # config store across /root/.hermes and /opt/hermes/.hermes.
 WorkingDirectory=${INSTALL_DIR}

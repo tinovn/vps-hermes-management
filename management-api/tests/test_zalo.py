@@ -45,39 +45,48 @@ def test_zalo_status_pending(client: TestClient, auth_headers: dict) -> None:
     assert resp.json()["data"]["status"] == "pending"
 
 
-def test_zalo_status_connected_persists_owner_uid(
+def test_zalo_status_connected_triggers_handover(
     client: TestClient, auth_headers: dict, test_settings: Settings
 ) -> None:
+    # First connect (no OWNER_UID yet) → schedule handover (persist + enable +
+    # restart gateway) as a background task. We mock the handover itself.
     mock_get = AsyncMock(
         return_value=_fake_response(
             200, {"status": "connected", "uid": "98765", "name": "Sếp"}
         )
     )
-    with patch("hermes_mgmt.routes.zalo._sidecar_get", mock_get):
+    with (
+        patch("hermes_mgmt.routes.zalo._sidecar_get", mock_get),
+        patch("hermes_mgmt.routes.zalo._activate_plugin_and_handover", AsyncMock()) as mock_act,
+    ):
         resp = client.get("/api/zalo/status", headers=auth_headers)
 
     body = resp.json()
     assert body["data"]["status"] == "connected"
     assert body["data"]["uid"] == "98765"
-    # Owner uid auto-persisted into HERMES_HOME/.env (low-tech: no manual UID).
-    env = read_env(test_settings.hermes_home / ".env")
-    assert env.get("ZALO_PERSONAL_OWNER_UID") == "98765"
+    assert body["data"]["activating"] is True
+    mock_act.assert_called_once()
+    # Called with (settings, "98765")
+    assert mock_act.call_args.args[1] == "98765"
 
 
-def test_zalo_status_connected_respects_existing_uid(
+def test_zalo_status_connected_already_active_no_handover(
     client: TestClient, auth_headers: dict, test_settings: Settings
 ) -> None:
-    # Pre-seed a different owner uid; connect must NOT overwrite it.
+    # OWNER_UID already set → plugin active → no handover, just keep uid.
     from hermes_mgmt.env_file import set_env
 
     set_env(test_settings.hermes_home / ".env", "ZALO_PERSONAL_OWNER_UID", "111")
     mock_get = AsyncMock(
-        return_value=_fake_response(200, {"status": "connected", "uid": "222", "name": "X"})
+        return_value=_fake_response(200, {"status": "connected", "uid": "111", "name": "X"})
     )
-    with patch("hermes_mgmt.routes.zalo._sidecar_get", mock_get):
-        client.get("/api/zalo/status", headers=auth_headers)
-    env = read_env(test_settings.hermes_home / ".env")
-    assert env.get("ZALO_PERSONAL_OWNER_UID") == "111"
+    with (
+        patch("hermes_mgmt.routes.zalo._sidecar_get", mock_get),
+        patch("hermes_mgmt.routes.zalo._activate_plugin_and_handover", AsyncMock()) as mock_act,
+    ):
+        resp = client.get("/api/zalo/status", headers=auth_headers)
+    assert resp.json()["data"]["activating"] is False
+    mock_act.assert_not_called()
 
 
 # ─── connect ───────────────────────────────────────────────────────────────
@@ -87,7 +96,10 @@ def test_zalo_connect_pending(client: TestClient, auth_headers: dict) -> None:
     mock_post = AsyncMock(
         return_value=_fake_response(200, {"status": "pending", "qr_url": "/qr.png"})
     )
-    with patch("hermes_mgmt.routes.zalo._sidecar_post", mock_post):
+    with (
+        patch("hermes_mgmt.routes.zalo._ensure_sidecar", AsyncMock(return_value=True)),
+        patch("hermes_mgmt.routes.zalo._sidecar_post", mock_post),
+    ):
         resp = client.post("/api/zalo/connect", headers=auth_headers)
     assert resp.status_code == 200
     body = resp.json()
@@ -101,16 +113,29 @@ def test_zalo_connect_already_connected(
     mock_post = AsyncMock(
         return_value=_fake_response(200, {"status": "already_connected", "uid": "555"})
     )
-    with patch("hermes_mgmt.routes.zalo._sidecar_post", mock_post):
+    with (
+        patch("hermes_mgmt.routes.zalo._ensure_sidecar", AsyncMock(return_value=True)),
+        patch("hermes_mgmt.routes.zalo._sidecar_post", mock_post),
+    ):
         resp = client.post("/api/zalo/connect", headers=auth_headers)
     assert resp.json()["data"]["status"] == "connected"
     env = read_env(test_settings.hermes_home / ".env")
     assert env.get("ZALO_PERSONAL_OWNER_UID") == "555"
 
 
+def test_zalo_connect_sidecar_cannot_spawn(client: TestClient, auth_headers: dict) -> None:
+    # Sidecar can't be spawned (no node / missing files) → 503.
+    with patch("hermes_mgmt.routes.zalo._ensure_sidecar", AsyncMock(return_value=False)):
+        resp = client.post("/api/zalo/connect", headers=auth_headers)
+    assert resp.status_code == 503
+
+
 def test_zalo_connect_sidecar_down(client: TestClient, auth_headers: dict) -> None:
     mock_post = AsyncMock(side_effect=httpx.ConnectError("refused"))
-    with patch("hermes_mgmt.routes.zalo._sidecar_post", mock_post):
+    with (
+        patch("hermes_mgmt.routes.zalo._ensure_sidecar", AsyncMock(return_value=True)),
+        patch("hermes_mgmt.routes.zalo._sidecar_post", mock_post),
+    ):
         resp = client.post("/api/zalo/connect", headers=auth_headers)
     assert resp.status_code == 503
 
@@ -133,6 +158,39 @@ def test_zalo_qr_not_ready(client: TestClient, auth_headers: dict) -> None:
     with patch("hermes_mgmt.routes.zalo._sidecar_get", mock_get):
         resp = client.get("/api/zalo/qr", headers=auth_headers)
     assert resp.status_code == 404
+
+
+# ─── enable plugin in config.yaml ───────────────────────────────────────────
+
+
+def test_enable_plugin_in_config_adds_key(test_settings: Settings) -> None:
+    from hermes_mgmt.routes.zalo import _PLUGIN_KEY, _enable_plugin_in_config
+
+    cfg = test_settings.hermes_home / "config.yaml"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text("plugins:\n  enabled: []\n", encoding="utf-8")
+    _enable_plugin_in_config(test_settings)
+    import yaml
+
+    data = yaml.safe_load(cfg.read_text())
+    assert _PLUGIN_KEY in data["plugins"]["enabled"]
+
+
+def test_enable_plugin_in_config_idempotent_and_no_section(
+    test_settings: Settings,
+) -> None:
+    from hermes_mgmt.routes.zalo import _PLUGIN_KEY, _enable_plugin_in_config
+
+    cfg = test_settings.hermes_home / "config.yaml"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text("model: gpt-4o\n", encoding="utf-8")  # no plugins section
+    _enable_plugin_in_config(test_settings)
+    _enable_plugin_in_config(test_settings)  # second call must not duplicate
+    import yaml
+
+    data = yaml.safe_load(cfg.read_text())
+    assert data["plugins"]["enabled"].count(_PLUGIN_KEY) == 1
+    assert data["model"] == "gpt-4o"  # preserved other keys
 
 
 # ─── disconnect ────────────────────────────────────────────────────────────
