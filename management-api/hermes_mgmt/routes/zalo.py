@@ -55,6 +55,11 @@ _SIDECAR_TIMEOUT = 8.0
 # else name`. We read it from the manifest so we always enable the right key.
 _PLUGIN_DIR = Path("/root/.hermes/plugins/zalo-personal")
 _PLUGIN_FALLBACK_KEY = "zalo-personal-platform"
+# Platform id the adapter registers via ctx.register_platform() — distinct from
+# the plugin registry key. The gateway only STARTS a platform whose
+# config.yaml `platforms.<id>.enabled` is true (see gateway/run.py), so enabling
+# the plugin alone is not enough; we must flip this too.
+_PLATFORM_ID = "zalo-personal"
 _HERMES_BIN = "/usr/local/bin/hermes"
 
 
@@ -161,6 +166,20 @@ def _enable_plugin_in_config(settings: Settings) -> None:
     plugins["enabled"] = enabled
     plugins.setdefault("disabled", [])
     data["plugins"] = plugins
+
+    # Also flip platforms.<id>.enabled — the gateway only STARTS (and spawns the
+    # sidecar for) a platform marked enabled here. Without this the plugin loads
+    # but the gateway logs "No messaging platforms enabled" and never connects.
+    platforms = data.get("platforms")
+    if not isinstance(platforms, dict):
+        platforms = {}
+    entry = platforms.get(_PLATFORM_ID)
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["enabled"] = True
+    platforms[_PLATFORM_ID] = entry
+    data["platforms"] = platforms
+
     cfg_path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 

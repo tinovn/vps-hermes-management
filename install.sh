@@ -402,6 +402,28 @@ if [[ "$WITH_ZALO" == "true" && "$SKIP_HERMES" != "true" ]]; then
     HERMES_HOME=/root/.hermes /usr/local/bin/hermes plugins enable "${ZALO_PLUGIN_ID}" \
       >>"${LOG_FILE}" 2>&1 \
       || log "WARN: 'hermes plugins enable ${ZALO_PLUGIN_ID}' failed — enable it from the dashboard/CLI"
+
+    # Flip platforms.zalo-personal.enabled in config.yaml. Enabling the plugin
+    # only LOADS the adapter; the gateway only STARTS a platform (and spawns its
+    # sidecar) when its config.yaml platforms.<id>.enabled is true — otherwise it
+    # logs "No messaging platforms enabled". Platform id = the id the adapter
+    # passes to ctx.register_platform() (zalo-personal), NOT the plugin key.
+    HERMES_HOME=/root/.hermes /opt/hermes/hermes-agent/.venv/bin/python - <<'PYEOF' >>"${LOG_FILE}" 2>&1 || log "WARN: could not flip platforms.zalo-personal.enabled — set it from the dashboard"
+import os, yaml
+p = os.path.join(os.environ["HERMES_HOME"], "config.yaml")
+d = yaml.safe_load(open(p)) or {}
+pl = d.get("platforms")
+if not isinstance(pl, dict):
+    pl = {}
+e = pl.get("zalo-personal")
+if not isinstance(e, dict):
+    e = {}
+e["enabled"] = True
+pl["zalo-personal"] = e
+d["platforms"] = pl
+yaml.safe_dump(d, open(p, "w"), allow_unicode=True, sort_keys=False)
+print("platforms.zalo-personal.enabled=true")
+PYEOF
     log "Zalo plugin installed + enabled at ${ZALO_PLUGIN_DIR}"
   else
     log "WARN: Zalo plugin sources incomplete — sidecar not built"

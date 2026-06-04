@@ -175,6 +175,8 @@ def test_enable_plugin_in_config_adds_key(test_settings: Settings) -> None:
 
     data = yaml.safe_load(cfg.read_text())
     assert "zalo-personal-platform" in data["plugins"]["enabled"]
+    # Must also flip the platform on, or the gateway never starts it.
+    assert data["platforms"]["zalo-personal"]["enabled"] is True
 
 
 def test_enable_plugin_in_config_idempotent_and_no_section(
