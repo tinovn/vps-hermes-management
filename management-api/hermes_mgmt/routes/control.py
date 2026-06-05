@@ -237,6 +237,11 @@ async def _do_upgrade_mgmt(settings: Settings) -> None:
             stderr_b2.decode(errors="replace"),
         )
 
+        # Also refresh the Zalo plugin (git pull + npm) and restart the gateway
+        # so plugin fixes land on upgrade — the plugin is only cloned at install
+        # time and never updates otherwise.
+        await _update_zalo_plugin(settings)
+
         # Restart self last; this terminates the current uvicorn worker but
         # systemd respawns it immediately (Restart=always).
         await asyncio.sleep(1)
@@ -248,6 +253,51 @@ async def _do_upgrade_mgmt(settings: Settings) -> None:
         logger.error("Mgmt upgrade failed: %s", exc)
 
 
+_ZALO_PLUGIN_DIR = "/root/.hermes/plugins/zalo-personal"
+
+
+async def _update_zalo_plugin(settings: Settings) -> None:
+    """git pull the Zalo plugin + npm install its sidecar, then restart gateway.
+
+    Best-effort: any step failing is logged but never aborts the mgmt upgrade
+    (the plugin may be absent if installed with --skip-zalo).
+    """
+    plugin = Path(_ZALO_PLUGIN_DIR)
+    if not (plugin / ".git").exists():
+        logger.info("Zalo plugin not a git checkout (%s) — skipping plugin update", plugin)
+        return
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "-C", str(plugin), "pull", "--ff-only",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await proc.communicate()
+        logger.info("zalo plugin git pull: %s", out.decode(errors="replace")[-500:])
+    except Exception as exc:
+        logger.error("zalo plugin git pull failed: %s", exc)
+        return
+
+    sidecar = plugin / "sidecar"
+    if (sidecar / "package.json").exists():
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "npm", "install", "--no-audit", "--no-fund", "--loglevel=error",
+                cwd=str(sidecar),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            )
+            await asyncio.wait_for(proc.communicate(), timeout=180)
+        except Exception as exc:
+            logger.error("zalo sidecar npm install failed: %s", exc)
+
+    # Restart gateway so the updated adapter + sidecar take effect.
+    try:
+        if "hermes-gateway" in settings.allowed_services:
+            await restart("hermes-gateway", settings.allowed_services)
+            logger.info("gateway restarted after Zalo plugin update")
+    except Exception as exc:
+        logger.error("gateway restart after Zalo plugin update failed: %s", exc)
+
+
 @router.post(
     "/api/upgrade-mgmt",
     status_code=status.HTTP_202_ACCEPTED,
@@ -257,13 +307,12 @@ async def upgrade_mgmt(
     background_tasks: BackgroundTasks,
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> ApiResponse:
-    """Upgrade the management-api itself in place.
+    """Upgrade the management-api in place + refresh the Zalo plugin.
 
-    Idempotent: re-pulls all Python sources from the canonical raw URL (or
-    `git pull` if the install is a git checkout), re-runs `uv pip install`,
-    and restarts `hermes-mgmt.service`. The response is returned via 202
-    Accepted before the unit cycles, so the caller will see a clean
-    answer even though uvicorn restarts seconds later.
+    Idempotent: re-pulls all Python sources + routes/config (dynamic via the
+    GitHub API), re-runs `uv pip install`, git-pulls the Zalo plugin and
+    npm-installs its sidecar (restarting the gateway), then restarts
+    `hermes-mgmt.service`. Returns 202 before the unit cycles.
     """
     background_tasks.add_task(_do_upgrade_mgmt, settings)
     return ApiResponse(
