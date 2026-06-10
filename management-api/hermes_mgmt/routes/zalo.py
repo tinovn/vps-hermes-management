@@ -449,3 +449,205 @@ async def zalo_set_owner(
     _set_owner_uid(settings, uid)
     background_tasks.add_task(_activate_plugin_and_handover, settings)
     return ApiResponse(ok=True, data={"owner_uid": uid, "owner_set": True})
+
+
+# ─── runtime control: chat mode / group list / add friend / logs ─────────────
+# Cron jobs đã có API chung tại /api/cron (cron_routes.py) — không lặp lại đây.
+
+# Mirror của _VALID_CHAT_MODES trong adapter.py (plugin hermes-zalo-plugin).
+_VALID_CHAT_MODES = {
+    "default", "active", "mention_only", "listen_only", "mute", "sales_active",
+}
+
+
+def _zalo_session_dir(settings: Settings) -> Path:
+    merged = read_env(settings.env_file)
+    merged.update(read_env(settings.hermes_home / ".env"))
+    return Path(merged.get("ZALO_PERSONAL_SESSION_DIR", "").strip() or "/opt/data/zalo")
+
+
+def _chat_settings_path(settings: Settings) -> Path:
+    """chat_settings.json — adapter đọc file này MỖI tin nhắn, nên mgmt ghi
+    trực tiếp là có hiệu lực ngay, không cần restart gateway."""
+    return _zalo_session_dir(settings) / "chat_settings.json"
+
+
+async def _sidecar_post_json(
+    settings: Settings, path: str, payload: dict, timeout: float = 20.0
+) -> httpx.Response:
+    url = f"{_sidecar_base_url(settings)}{path}"
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        return await client.post(url, json=payload)
+
+
+@router.get("/api/zalo/chat-modes", response_model=ApiResponse)
+async def zalo_list_chat_modes(
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> ApiResponse:
+    """Mode hiện tại của từng chat (active / mention_only / listen_only / mute...)."""
+    import json as _json
+
+    path = _chat_settings_path(settings)
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    modes = {
+        cid: (rec or {}).get("mode", "default")
+        for cid, rec in data.items()
+        if isinstance(rec, dict)
+    }
+    return ApiResponse(ok=True, data={"chat_modes": modes, "valid_modes": sorted(_VALID_CHAT_MODES)})
+
+
+@router.post("/api/zalo/chat-mode", response_model=ApiResponse)
+async def zalo_set_chat_mode(
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    body: dict = Body(...),
+) -> ApiResponse:
+    """Đổi mode bot trong 1 chat: {chat_id, mode}.
+
+    mode=active → bot trả lời MỌI tin trong group đó (không cần @tag);
+    mention_only → chỉ khi tag/reply; listen_only → chỉ nghe; mute → bỏ qua.
+    Ghi thẳng chat_settings.json — adapter áp dụng ngay tin kế tiếp.
+    """
+    import json as _json
+
+    chat_id = str(body.get("chat_id", "")).strip()
+    mode = str(body.get("mode", "")).strip().lower()
+    if not chat_id or mode not in _VALID_CHAT_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cần chat_id và mode hợp lệ ({', '.join(sorted(_VALID_CHAT_MODES))}).",
+        )
+    path = _chat_settings_path(settings)
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    rec = data.get(chat_id)
+    if not isinstance(rec, dict):
+        rec = {}
+    rec["mode"] = mode
+    data[chat_id] = rec
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+    logger.info("zalo chat-mode: %s -> %s", chat_id, mode)
+    return ApiResponse(ok=True, data={"chat_id": chat_id, "mode": mode})
+
+
+@router.get("/api/zalo/groups", response_model=ApiResponse)
+async def zalo_list_groups(
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> ApiResponse:
+    """Danh sách nhóm bot đang tham gia (id + tên + sĩ số) — để GUI chọn nhóm
+    rồi gọi /api/zalo/chat-mode bật active cho đúng nhóm."""
+    try:
+        r = await _sidecar_post_json(settings, "/api/call", {"method": "getAllGroups", "args": []})
+    except httpx.RequestError:
+        raise _sidecar_unreachable()
+    if r.status_code != 200:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Sidecar getAllGroups lỗi (HTTP {r.status_code}): {r.text[:200]}",
+        )
+    grid_ver = (r.json().get("result") or {}).get("gridVerMap") or {}
+    group_ids = [str(g).split("_")[0] for g in grid_ver.keys()]
+    groups: list[dict] = []
+    # getGroupInfo nhận mảng id → trả gridInfoMap {id: {name, totalMember...}}.
+    if group_ids:
+        try:
+            r2 = await _sidecar_post_json(
+                settings, "/api/call", {"method": "getGroupInfo", "args": [group_ids]},
+                timeout=30.0,
+            )
+            info_map = (r2.json().get("result") or {}).get("gridInfoMap") or {} \
+                if r2.status_code == 200 else {}
+        except httpx.RequestError:
+            info_map = {}
+        for gid in group_ids:
+            info = info_map.get(gid) or {}
+            groups.append({
+                "group_id": gid,
+                "name": info.get("name") or info.get("groupName") or "",
+                "total_member": info.get("totalMember"),
+            })
+    return ApiResponse(ok=True, data={"count": len(groups), "groups": groups})
+
+
+@router.post("/api/zalo/friend-request", response_model=ApiResponse)
+async def zalo_friend_request(
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    body: dict = Body(...),
+) -> ApiResponse:
+    """Gửi lời mời kết bạn từ tài khoản bot: {uid} hoặc {phone}, kèm message?.
+
+    Dùng khi cần bot chủ động kết bạn khách (sau đó nhắn tin được 1-1).
+    """
+    uid = str(body.get("uid", "")).strip()
+    phone = str(body.get("phone", "")).strip()
+    message = str(body.get("message", "")).strip() or "Xin chào, kết bạn với mình nhé!"
+
+    if not uid and phone:
+        try:
+            r = await _sidecar_post_json(settings, "/users/by-phones", {"phones": [phone]}, timeout=15.0)
+        except httpx.RequestError:
+            raise _sidecar_unreachable()
+        users = (r.json().get("users") or []) if r.status_code == 200 else []
+        if not users or not users[0].get("uid"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy tài khoản Zalo cho số {phone}.",
+            )
+        uid = str(users[0]["uid"])
+    if not uid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cần 'uid' hoặc 'phone' của người muốn kết bạn.",
+        )
+    try:
+        r = await _sidecar_post_json(settings, "/friend/request", {"uid": uid, "msg": message}, timeout=20.0)
+    except httpx.RequestError:
+        raise _sidecar_unreachable()
+    if r.status_code != 200:
+        detail = ""
+        try:
+            detail = str(r.json().get("error") or "")[:200]
+        except ValueError:
+            detail = r.text[:200]
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gửi lời mời thất bại: {detail or f'HTTP {r.status_code}'}",
+        )
+    return ApiResponse(ok=True, data={"uid": uid, "message": message})
+
+
+@router.get("/api/zalo/logs", response_model=ApiResponse)
+async def zalo_logs(
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    lines: int = 200,
+) -> ApiResponse:
+    """Tail log liên quan Zalo (lọc từ agent.log + gateway.log của Hermes).
+
+    Cron jobs xem/sửa qua API chung /api/cron — không trùng lặp ở đây.
+    """
+    lines = max(10, min(int(lines or 200), 1000))
+    out: list[str] = []
+    for fname in ("agent.log", "gateway.log"):
+        p = settings.hermes_home / "logs" / fname
+        try:
+            with open(p, "rb") as fh:
+                fh.seek(0, 2)
+                size = fh.tell()
+                fh.seek(max(0, size - 1024 * 1024))  # đọc tối đa 1MB cuối
+                text = fh.read().decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        out.extend(
+            f"[{fname}] {ln}"
+            for ln in text.splitlines()
+            if "zalo" in ln.lower()
+        )
+    return ApiResponse(ok=True, data={"lines": out[-lines:], "count": min(len(out), lines)})
