@@ -490,11 +490,13 @@ if [[ ! -f "${INSTALL_DIR}/.env" ]]; then
 # After changes: systemctl restart hermes-gateway hermes-dashboard hermes-mgmt caddy
 
 # --- Core ---
-# HERMES_HOME defaults to \$HOME/.hermes via the Hermes CLI; with our services
-# running as User=root and HOME unset (so systemd defaults HOME=/root), that
-# resolves to /root/.hermes — the same path the bare CLI uses when an admin
-# SSHes in. Don't set HERMES_HOME here unless you want to point services at
-# a different store than interactive CLI.
+# HERMES_HOME: set EXPLICITLY to the same path the CLI resolves by default
+# (\$HOME/.hermes with HOME=/root for our root services). Required by the
+# Zalo plugin adapter: its owner-gate reads \${HERMES_HOME}/sessions/sessions.json
+# and falls back to /opt/data when unset — on a fresh VPS that path has no
+# sessions store, so the fail-closed gate would block every zalo_* tool
+# (even the owner's). Keep this in sync with the service units' HOME.
+HERMES_HOME=/root/.hermes
 HERMES_VPS_VERSION=${APP_VERSION}
 HERMES_DROPLET_IP=${DROPLET_IP}
 DOMAIN=${DOMAIN}
@@ -566,6 +568,12 @@ else
   log "  MGMT_API_KEY : $([[ -n "$EXISTING_MGMT_API_KEY"   ]] && echo "preserved" || echo "appended")"
   log "  SESSION_SECRET: $([[ -n "$EXISTING_SESSION_SECRET" ]] && echo "preserved" || echo "appended")"
   log "  AUTH_TOKEN   : $([[ -n "$EXISTING_AUTH_TOKEN"     ]] && echo "preserved" || echo "appended")"
+  # HERMES_HOME: required by the Zalo plugin owner-gate (see fresh-.env comment).
+  # Old VPS installs lack it — append so the adapter resolves sessions.json.
+  if ! grep -q '^HERMES_HOME=' "${INSTALL_DIR}/.env"; then
+    echo "HERMES_HOME=/root/.hermes" >> "${INSTALL_DIR}/.env"
+    log "  HERMES_HOME  : appended (/root/.hermes — Zalo owner-gate fix)"
+  fi
   # Seed Zalo plugin env block on re-run if absent (preserve any existing value).
   if [[ "$WITH_ZALO" == "true" ]] && ! grep -q '^ZALO_PERSONAL_OWNER_UID=' "${INSTALL_DIR}/.env"; then
     cat >> "${INSTALL_DIR}/.env" <<'ZEOF'

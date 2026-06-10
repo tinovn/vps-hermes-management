@@ -254,6 +254,46 @@ async def _do_upgrade_mgmt(settings: Settings) -> None:
 
 
 _ZALO_PLUGIN_DIR = "/root/.hermes/plugins/zalo-personal"
+_HERMES_ENV_FILE = Path("/opt/hermes/.env")
+_HERMES_HOME_REAL = Path("/root/.hermes")
+
+
+def _remap_zalo_sessions() -> None:
+    """Fix the sessions-store mapping on OLD VPS installs (idempotent).
+
+    The plugin adapter's owner-gate reads ``${HERMES_HOME}/sessions/sessions.json``
+    and historically defaulted to ``/opt/data`` when HERMES_HOME was unset —
+    but the gateway (HOME=/root) writes sessions to ``/root/.hermes/sessions``.
+    Result on old installs: gate can't resolve the session → fail-closed →
+    every zalo_* tool denied, even for the owner.
+
+    Two-layer fix, both safe to re-run:
+      1. Append ``HERMES_HOME=/root/.hermes`` to /opt/hermes/.env if missing
+         (deterministic — the adapter checks the env var first).
+      2. Symlink ``/opt/data/sessions -> /root/.hermes/sessions`` as belt &
+         braces for plugin versions that still read /opt/data directly.
+    """
+    try:
+        from hermes_mgmt.env_file import read_env, set_env
+
+        if _HERMES_ENV_FILE.exists() and "HERMES_HOME" not in read_env(_HERMES_ENV_FILE):
+            set_env(_HERMES_ENV_FILE, "HERMES_HOME", str(_HERMES_HOME_REAL))
+            logger.info("zalo remap: appended HERMES_HOME=%s to %s", _HERMES_HOME_REAL, _HERMES_ENV_FILE)
+    except Exception as exc:
+        logger.error("zalo remap: HERMES_HOME env fix failed: %s", exc)
+
+    try:
+        real_sessions = _HERMES_HOME_REAL / "sessions"
+        opt_sessions = Path("/opt/data/sessions")
+        real_sessions.mkdir(parents=True, exist_ok=True)
+        opt_sessions.parent.mkdir(parents=True, exist_ok=True)
+        # Only create when nothing is there: an existing REAL dir might hold
+        # data we must not shadow (the env fix above covers that case anyway).
+        if not opt_sessions.exists() and not opt_sessions.is_symlink():
+            opt_sessions.symlink_to(real_sessions)
+            logger.info("zalo remap: symlinked %s -> %s", opt_sessions, real_sessions)
+    except Exception as exc:
+        logger.error("zalo remap: sessions symlink failed: %s", exc)
 
 
 async def _update_zalo_plugin(settings: Settings) -> None:
@@ -266,7 +306,17 @@ async def _update_zalo_plugin(settings: Settings) -> None:
     if not (plugin / ".git").exists():
         logger.info("Zalo plugin not a git checkout (%s) — skipping plugin update", plugin)
         return
+    # Remap sessions store FIRST so the gateway restart below picks it up —
+    # this rescues old VPSes where the owner-gate blocked every zalo_* tool.
+    _remap_zalo_sessions()
     try:
+        # Stash any runtime hand-edits (e.g. hotfixes the on-VPS agent applied)
+        # so --ff-only never fails on a dirty tree; upstream is canonical.
+        proc = await asyncio.create_subprocess_exec(
+            "git", "-C", str(plugin), "stash",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        await proc.communicate()
         proc = await asyncio.create_subprocess_exec(
             "git", "-C", str(plugin), "pull", "--ff-only",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
