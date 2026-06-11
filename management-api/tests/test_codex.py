@@ -48,6 +48,76 @@ def test_codex_status_connected_sets_model(
     assert cfg["model"]["default"] == CODEX_DEFAULT_MODEL
 
 
+def test_codex_status_connected_credential_pool_shape(
+    client: TestClient, auth_headers: dict, test_settings: Settings
+) -> None:
+    """auth.json v1 shape (credential_pool, empty providers map) is detected.
+
+    Real-world file from `hermes auth add openai-codex` on recent Hermes:
+    providers={} but credential_pool["openai-codex"]=[...] — the dashboard
+    showed 'Chưa kết nối' while Hermes itself chatted fine.
+    """
+    _write_auth(
+        test_settings,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {"openai-codex": [{"access_token": "t", "id": "c1"}]},
+            "active_provider": "openai-codex",
+        },
+    )
+    (test_settings.hermes_home / "config.yaml").write_text("{}\n")
+    with patch("hermes_mgmt.routes.codex.restart", AsyncMock(return_value=(0, "ok"))):
+        resp = client.get("/api/codex/auth/status", headers=auth_headers)
+    assert resp.json()["data"]["status"] == "connected"
+    import yaml
+
+    cfg = yaml.safe_load((test_settings.hermes_home / "config.yaml").read_text())
+    assert cfg["model"]["provider"] == "openai-codex"
+    assert cfg["model"]["default"]
+
+
+def test_codex_status_empty_credential_pool_disconnected(
+    client: TestClient, auth_headers: dict, test_settings: Settings
+) -> None:
+    """A drained pool (no credential entries left) does NOT count as connected."""
+    _write_auth(
+        test_settings,
+        {"version": 1, "providers": {}, "credential_pool": {"openai-codex": []}},
+    )
+    with patch("hermes_mgmt.routes.codex._flow", {"proc": None, "url": None, "code": None}):
+        resp = client.get("/api/codex/auth/status", headers=auth_headers)
+    assert resp.json()["data"]["status"] == "disconnected"
+
+
+def test_codex_disable_clears_credential_pool(
+    client: TestClient, auth_headers: dict, test_settings: Settings
+) -> None:
+    _write_auth(
+        test_settings,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {"openai-codex": [{"access_token": "t"}], "nous": [{"access_token": "n"}]},
+            "active_provider": "openai-codex",
+        },
+    )
+    test_settings.hermes_home.mkdir(parents=True, exist_ok=True)
+    (test_settings.hermes_home / "config.yaml").write_text(
+        "model:\n  provider: openai-codex\n  default: gpt-5.5\n"
+    )
+    with (
+        patch("hermes_mgmt.routes.codex.asyncio.create_subprocess_exec", AsyncMock()),
+        patch("hermes_mgmt.routes.codex.restart", AsyncMock(return_value=(0, "ok"))),
+    ):
+        resp = client.post("/api/codex/auth/disable", headers=auth_headers, json={})
+    assert resp.status_code == 200
+    auth = json.loads((test_settings.hermes_home / "auth.json").read_text())
+    assert "openai-codex" not in auth["credential_pool"]
+    assert "nous" in auth["credential_pool"]  # other providers untouched
+    assert auth["active_provider"] is None
+
+
 def test_codex_status_fixes_dead_model_default(
     client: TestClient, auth_headers: dict, test_settings: Settings
 ) -> None:

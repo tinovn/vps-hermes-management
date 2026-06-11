@@ -66,7 +66,15 @@ def _auth_file(settings: Settings) -> Path:
 
 
 def _has_codex_token(settings: Settings) -> bool:
-    """True if auth.json contains a Codex/OpenAI-Codex credential entry."""
+    """True if auth.json contains a Codex/OpenAI-Codex credential entry.
+
+    auth.json shape varies by Hermes version — accept any of:
+      - legacy top-level keys:        {"codex": {...}} / {"openai-codex": {...}}
+      - providers map:                {"providers": {"openai-codex": {...}}}
+      - v1 credential pool:           {"version": 1, "credential_pool":
+                                        {"openai-codex": [<credential>, ...]},
+                                        "active_provider": "openai-codex"}
+    """
     f = _auth_file(settings)
     if not f.exists():
         return False
@@ -74,10 +82,15 @@ def _has_codex_token(settings: Settings) -> bool:
         data = json.loads(f.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return False
-    # auth.json shape varies; accept either top-level keys or a providers map.
-    candidates = set(data.keys()) if isinstance(data, dict) else set()
-    if isinstance(data, dict) and isinstance(data.get("providers"), dict):
+    if not isinstance(data, dict):
+        return False
+    candidates = set(data.keys())
+    if isinstance(data.get("providers"), dict):
         candidates |= set(data["providers"].keys())
+    pool = data.get("credential_pool")
+    if isinstance(pool, dict):
+        # Only providers that still hold at least one credential entry.
+        candidates |= {k for k, v in pool.items() if v}
     return any(k in candidates for k in _CODEX_AUTH_KEYS)
 
 
@@ -323,7 +336,8 @@ async def codex_disable(
     except Exception as exc:
         logger.warning("hermes auth remove openai-codex failed (continuing): %s", exc)
 
-    # 2. Defensive cleanup of auth.json (drop codex entry + active_provider).
+    # 2. Defensive cleanup of auth.json (drop codex entries in every shape:
+    #    legacy top-level, providers map, v1 credential_pool + active_provider).
     af = _auth_file(settings)
     if af.exists():
         try:
@@ -333,6 +347,10 @@ async def codex_disable(
                 if isinstance(provs, dict):
                     for k in _CODEX_AUTH_KEYS:
                         provs.pop(k, None)
+                pool = data.get("credential_pool")
+                if isinstance(pool, dict):
+                    for k in _CODEX_AUTH_KEYS:
+                        pool.pop(k, None)
                 for k in _CODEX_AUTH_KEYS:
                     data.pop(k, None)
                 if data.get("active_provider") in _CODEX_AUTH_KEYS:
