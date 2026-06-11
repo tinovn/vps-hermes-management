@@ -41,7 +41,30 @@ def test_codex_status_connected_sets_model(
     import yaml
 
     cfg = yaml.safe_load((test_settings.hermes_home / "config.yaml").read_text())
-    assert cfg["model"]["provider"] == "codex"
+    assert cfg["model"]["provider"] == "openai-codex"
+    # model.default pinned to a supported slug — empty default crashes cron.
+    from hermes_mgmt.routes.config_routes import CODEX_DEFAULT_MODEL
+
+    assert cfg["model"]["default"] == CODEX_DEFAULT_MODEL
+
+
+def test_codex_status_fixes_dead_model_default(
+    client: TestClient, auth_headers: dict, test_settings: Settings
+) -> None:
+    """provider already openai-codex but default is a dead slug → re-pinned."""
+    _write_auth(test_settings, {"codex": {"access_token": "tok"}})
+    (test_settings.hermes_home / "config.yaml").write_text(
+        "model:\n  provider: openai-codex\n  default: gpt-5.1-codex-max\n"
+    )
+    with patch("hermes_mgmt.routes.codex.restart", AsyncMock(return_value=(0, "ok"))):
+        resp = client.get("/api/codex/auth/status", headers=auth_headers)
+    assert resp.json()["data"]["status"] == "connected"
+    import yaml
+
+    from hermes_mgmt.routes.config_routes import CODEX_DEFAULT_MODEL
+
+    cfg = yaml.safe_load((test_settings.hermes_home / "config.yaml").read_text())
+    assert cfg["model"]["default"] == CODEX_DEFAULT_MODEL
 
 
 # ─── start ───────────────────────────────────────────────────────────────────
@@ -115,7 +138,8 @@ def test_codex_import_ok_sets_model(
     import yaml
 
     cfg = yaml.safe_load((test_settings.hermes_home / "config.yaml").read_text())
-    assert cfg["model"]["provider"] == "codex"
+    assert cfg["model"]["provider"] == "openai-codex"
+    assert cfg["model"]["default"]  # non-empty — cron requires it
 
 
 def test_codex_import_accepts_string_json(
@@ -137,7 +161,10 @@ def test_codex_disable_clears_auth_and_config(
                                 "providers": {"openai-codex": {"access_token": "t"}},
                                 "codex": {"access_token": "t"}})
     test_settings.hermes_home.mkdir(parents=True, exist_ok=True)
-    (test_settings.hermes_home / "config.yaml").write_text("model:\n  provider: codex\n")
+    # Legacy "codex" alias + a Codex-only default model: both must be cleaned.
+    (test_settings.hermes_home / "config.yaml").write_text(
+        "model:\n  provider: codex\n  default: gpt-5.5\n"
+    )
     with (
         patch("hermes_mgmt.routes.codex.asyncio.create_subprocess_exec", AsyncMock()),
         patch("hermes_mgmt.routes.codex.restart", AsyncMock(return_value=(0, "ok"))),
@@ -152,3 +179,5 @@ def test_codex_disable_clears_auth_and_config(
     import yaml
     cfg = yaml.safe_load((test_settings.hermes_home / "config.yaml").read_text())
     assert cfg["model"]["provider"] == "deepseek"
+    # Codex-only model.default must not leak to the new provider.
+    assert "default" not in cfg["model"]

@@ -43,6 +43,23 @@ _PROVIDER_TEST_PATHS: dict[str, str] = {
     "huggingface": "/models",
 }
 
+# Codex (ChatGPT OAuth) only accepts models from its own backend catalog.
+# Dead slugs (gpt-5.2-codex, gpt-5.1-codex-max, gpt-5.1-codex-mini) return
+# HTTP 400 "model not supported when using Codex with a ChatGPT account".
+# An EMPTY model.default is also fatal: the gateway chat path falls back to
+# the provider catalog, but the cron scheduler reads config.yaml
+# model.default directly and crashes with "Codex Responses request 'model'
+# must be a non-empty string" — so we always pin a known-good default.
+# Keep aligned with upstream hermes_cli/codex_models.py DEFAULT_CODEX_MODELS.
+CODEX_DEFAULT_MODEL = "gpt-5.5"
+CODEX_SUPPORTED_MODELS = {
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+}
+
 _SENSITIVE_PATTERN = re.compile(r"(?i)(api_key|token|secret|password)")
 
 
@@ -66,24 +83,15 @@ async def get_config(settings: Annotated[Settings, Depends(get_settings_dep)]) -
     return ApiResponse(ok=True, data=masked)
 
 
-def _strip_model_default(config_path) -> None:
-    """Remove model.default from config.yaml (codex uses the account default).
+def resolve_codex_model(requested: str) -> str:
+    """Clamp a requested Codex model to the supported catalog.
 
-    Idempotent; no-op if the file/section is missing or already clean.
+    Unknown/dead slugs (or empty input) fall back to CODEX_DEFAULT_MODEL so we
+    never persist a model the ChatGPT backend rejects — and never leave
+    model.default empty (which crashes cron jobs, see CODEX_DEFAULT_MODEL).
     """
-    import yaml
-    from pathlib import Path
-
-    p = Path(config_path)
-    try:
-        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        return
-    model = data.get("model")
-    if isinstance(model, dict) and "default" in model:
-        model.pop("default", None)
-        data["model"] = model
-        p.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    req = (requested or "").strip()
+    return req if req in CODEX_SUPPORTED_MODELS else CODEX_DEFAULT_MODEL
 
 
 @router.put("/api/config/provider", response_model=ApiResponse)
@@ -98,27 +106,26 @@ async def set_provider(
     # /root/.hermes, a different file from the one GET /api/config reads).
     hermes_env = {"HERMES_HOME": str(settings.hermes_home)}
 
-    # Codex via a ChatGPT account REJECTS an explicit model.default — the
-    # backend only accepts its own account-default model (sending e.g.
-    # "gpt-5.1-codex-max" → HTTP 400 "model not supported"). So for codex we
-    # CLEAR model.default and let Hermes/account pick. Every other provider
-    # needs an explicit model.
+    # Codex via a ChatGPT account only accepts models from its backend
+    # catalog (dead slugs like "gpt-5.1-codex-max" → HTTP 400). Clamp the
+    # model to the supported set and ALWAYS set model.default — leaving it
+    # empty crashes cron jobs ("'model' must be a non-empty string": the
+    # cron scheduler reads config.yaml model.default with no catalog
+    # fallback, unlike the chat path). Normalize the provider to the
+    # upstream registry id "openai-codex" ("codex" is our legacy alias).
     is_codex = body.provider in ("codex", "openai-codex")
-    if is_codex:
-        # `hermes config` has no `unset`; strip model.default directly from
-        # config.yaml so Codex falls back to the account-default model.
-        _strip_model_default(settings.hermes_home / "config.yaml")
-    else:
-        result = await run_hermes(
-            "config", ["set", "model.default", body.model], env_overrides=hermes_env
-        )
-        if result.exit_code != 0:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"hermes config set model.default failed: {result.stderr}",
-            )
+    provider = "openai-codex" if is_codex else body.provider
+    model = resolve_codex_model(body.model) if is_codex else body.model
     result = await run_hermes(
-        "config", ["set", "model.provider", body.provider], env_overrides=hermes_env
+        "config", ["set", "model.default", model], env_overrides=hermes_env
+    )
+    if result.exit_code != 0:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"hermes config set model.default failed: {result.stderr}",
+        )
+    result = await run_hermes(
+        "config", ["set", "model.provider", provider], env_overrides=hermes_env
     )
     if result.exit_code != 0:
         raise HTTPException(
@@ -133,7 +140,7 @@ async def set_provider(
             logger.error("Failed to restart hermes-gateway: %s", exc)
 
     background_tasks.add_task(do_restart)
-    return ApiResponse(ok=True, data={"provider": body.provider, "model": body.model})
+    return ApiResponse(ok=True, data={"provider": provider, "model": model})
 
 
 @router.put("/api/config/api-key", response_model=ApiResponse)

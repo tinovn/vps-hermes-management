@@ -43,7 +43,10 @@ router = APIRouter(tags=["codex"], dependencies=[Depends(require_auth)])
 
 _HERMES_BIN = "/usr/local/bin/hermes"
 _AUTH_PROVIDER = "openai-codex"
-_MODEL_PROVIDER = "codex"
+# Upstream provider registry id. "codex" was our legacy alias — recognize it
+# when reading, but always WRITE "openai-codex".
+_MODEL_PROVIDER = "openai-codex"
+_MODEL_PROVIDER_ALIASES = ("codex", "openai-codex")
 # Keys an auth.json entry may use for the Codex/OpenAI-Codex provider.
 _CODEX_AUTH_KEYS = ("codex", "openai-codex", "codex-oauth")
 # Strip ANSI colour codes the CLI emits around the URL/code.
@@ -79,8 +82,16 @@ def _has_codex_token(settings: Settings) -> bool:
 
 
 def _set_codex_model(settings: Settings) -> None:
-    """Point config.yaml at the codex provider (idempotent)."""
+    """Point config.yaml at the codex provider + a supported default model.
+
+    model.default MUST be a non-empty supported slug: the cron scheduler reads
+    it directly (no catalog fallback like the chat path) and an empty value
+    crashes every cron job with "Codex Responses request 'model' must be a
+    non-empty string". Idempotent.
+    """
     import yaml
+
+    from hermes_mgmt.routes.config_routes import resolve_codex_model
 
     cfg = settings.hermes_home / "config.yaml"
     try:
@@ -91,6 +102,8 @@ def _set_codex_model(settings: Settings) -> None:
     if not isinstance(model, dict):
         model = {}
     model["provider"] = _MODEL_PROVIDER
+    # Clamp whatever is there (empty, dead slug...) to a supported model.
+    model["default"] = resolve_codex_model(str(model.get("default") or ""))
     data["model"] = model
     cfg.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
@@ -191,9 +204,17 @@ async def codex_status(
         try:
             import yaml
 
+            from hermes_mgmt.routes.config_routes import CODEX_SUPPORTED_MODELS
+
             cfg = settings.hermes_home / "config.yaml"
             data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-            already = (data.get("model") or {}).get("provider") == _MODEL_PROVIDER
+            model_cfg = data.get("model") or {}
+            # "already" only when BOTH provider and a supported default model
+            # are in place — a missing/dead model.default still needs fixing.
+            already = (
+                model_cfg.get("provider") == _MODEL_PROVIDER
+                and model_cfg.get("default") in CODEX_SUPPORTED_MODELS
+            )
         except Exception:
             already = False
         if not already:
@@ -329,12 +350,18 @@ async def codex_disable(
         cfg_data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError):
         cfg_data = {}
+    from hermes_mgmt.routes.config_routes import CODEX_SUPPORTED_MODELS
+
     model_cfg = cfg_data.get("model") if isinstance(cfg_data.get("model"), dict) else {}
-    if model_cfg.get("provider") == _MODEL_PROVIDER:
+    if model_cfg.get("provider") in _MODEL_PROVIDER_ALIASES:
         if to_provider:
             model_cfg["provider"] = to_provider
         else:
             model_cfg.pop("provider", None)
+        # Don't let the new provider inherit a Codex-only model.default —
+        # the follow-up PUT /api/config/provider sets the right one.
+        if model_cfg.get("default") in CODEX_SUPPORTED_MODELS:
+            model_cfg.pop("default", None)
         cfg_data["model"] = model_cfg
         cfg.write_text(yaml.safe_dump(cfg_data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
