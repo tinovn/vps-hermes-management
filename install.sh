@@ -329,6 +329,27 @@ if [[ "$SKIP_HERMES" != "true" ]]; then
     popd >/dev/null
     log "Web dashboard built"
   fi
+
+  # Default config tweaks: clean cron delivery. Upstream wraps every scheduled
+  # job message with "Cronjob Response: ..." / "(job_id: ...)" / "To stop or
+  # manage this job..." boilerplate (cron/scheduler.py, wrap_response default
+  # true) — end users should only see the actual content. Idempotent merge.
+  log "Setting cron.wrap_response=false (clean cron messages)..."
+  mkdir -p /root/.hermes
+  HERMES_HOME=/root/.hermes "${HERMES_SRC_DIR}/.venv/bin/python" - <<'PYEOF' >>"${LOG_FILE}" 2>&1 || log "WARN: could not set cron.wrap_response=false — set it in config.yaml manually"
+import os, yaml
+p = os.path.join(os.environ["HERMES_HOME"], "config.yaml")
+d = {}
+if os.path.exists(p):
+    d = yaml.safe_load(open(p)) or {}
+c = d.get("cron")
+if not isinstance(c, dict):
+    c = {}
+c["wrap_response"] = False
+d["cron"] = c
+yaml.safe_dump(d, open(p, "w"), allow_unicode=True, sort_keys=False)
+print("cron.wrap_response=false")
+PYEOF
 else
   log "Skipping Hermes install (--skip-hermes)"
 fi
