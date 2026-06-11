@@ -133,6 +133,13 @@ async def set_provider(
             detail=f"hermes config set model.provider failed: {result.stderr}",
         )
 
+    # Hermes prefers auth.json active_provider over config.yaml — align it or
+    # the provider switch silently doesn't take effect (lazy import: codex.py
+    # imports helpers from this module).
+    from hermes_mgmt.routes.codex import sync_active_provider
+
+    sync_active_provider(settings, provider)
+
     async def do_restart() -> None:
         try:
             await restart("hermes-gateway", settings.allowed_services)

@@ -29,22 +29,57 @@ def test_codex_status_disconnected(client: TestClient, auth_headers: dict) -> No
     assert resp.json()["data"]["status"] == "disconnected"
 
 
-def test_codex_status_connected_sets_model(
+def test_codex_status_respects_other_provider(
     client: TestClient, auth_headers: dict, test_settings: Settings
 ) -> None:
+    """A stray Codex token must NOT override an explicit non-codex provider.
+
+    The dashboard polls this endpoint for the badge — overwriting here meant
+    'configure API key provider' was flipped back to Codex on the next poll.
+    """
     _write_auth(test_settings, {"codex": {"access_token": "tok"}})
-    (test_settings.hermes_home / "config.yaml").write_text("model:\n  provider: deepseek\n")
-    with patch("hermes_mgmt.routes.codex.restart", AsyncMock(return_value=(0, "ok"))):
+    (test_settings.hermes_home / "config.yaml").write_text(
+        "model:\n  provider: deepseek\n  default: deepseek-chat\n"
+    )
+    with patch("hermes_mgmt.routes.codex._flow", {"proc": None, "url": None, "code": None}):
         resp = client.get("/api/codex/auth/status", headers=auth_headers)
     data = resp.json()["data"]
     assert data["status"] == "connected"
+    assert data["active"] is False
     import yaml
 
     cfg = yaml.safe_load((test_settings.hermes_home / "config.yaml").read_text())
-    assert cfg["model"]["provider"] == "openai-codex"
-    # model.default pinned to a supported slug — empty default crashes cron.
+    assert cfg["model"]["provider"] == "deepseek"  # untouched
+    assert cfg["model"]["default"] == "deepseek-chat"
+
+
+def test_codex_status_completed_flow_pins_model(
+    client: TestClient, auth_headers: dict, test_settings: Settings
+) -> None:
+    """After a dashboard-initiated device flow completes, Codex IS pinned even
+    if another provider was configured before."""
+    _write_auth(test_settings, {"codex": {"access_token": "tok"}})
+    (test_settings.hermes_home / "config.yaml").write_text("model:\n  provider: deepseek\n")
+
+    class _DoneProc:
+        returncode = 0
+
+    flow = {"proc": _DoneProc(), "url": "u", "code": "c", "started": 0.0, "output": ""}
+    with (
+        patch("hermes_mgmt.routes.codex._flow", flow),
+        patch("hermes_mgmt.routes.codex.restart", AsyncMock(return_value=(0, "ok"))),
+    ):
+        resp = client.get("/api/codex/auth/status", headers=auth_headers)
+    data = resp.json()["data"]
+    assert data["status"] == "connected"
+    assert data["active"] is True
+    assert flow["proc"] is None  # flow consumed — later polls stay passive
+    import yaml
+
     from hermes_mgmt.routes.config_routes import CODEX_DEFAULT_MODEL
 
+    cfg = yaml.safe_load((test_settings.hermes_home / "config.yaml").read_text())
+    assert cfg["model"]["provider"] == "openai-codex"
     assert cfg["model"]["default"] == CODEX_DEFAULT_MODEL
 
 
@@ -88,6 +123,32 @@ def test_codex_status_empty_credential_pool_disconnected(
     with patch("hermes_mgmt.routes.codex._flow", {"proc": None, "url": None, "code": None}):
         resp = client.get("/api/codex/auth/status", headers=auth_headers)
     assert resp.json()["data"]["status"] == "disconnected"
+
+
+def test_sync_active_provider_switches(test_settings: Settings) -> None:
+    """active_provider cleared when leaving codex, restored when returning."""
+    from hermes_mgmt.routes.codex import sync_active_provider
+
+    _write_auth(
+        test_settings,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {"openai-codex": [{"access_token": "t"}]},
+            "active_provider": "openai-codex",
+        },
+    )
+    auth_path = test_settings.hermes_home / "auth.json"
+
+    # Switch to an API-key provider → Hermes must stop preferring Codex.
+    sync_active_provider(test_settings, "deepseek")
+    assert json.loads(auth_path.read_text())["active_provider"] is None
+
+    # Switch back to codex → restored without re-OAuth (pool credential kept).
+    sync_active_provider(test_settings, "openai-codex")
+    data = json.loads(auth_path.read_text())
+    assert data["active_provider"] == "openai-codex"
+    assert data["credential_pool"]["openai-codex"]
 
 
 def test_codex_disable_clears_credential_pool(

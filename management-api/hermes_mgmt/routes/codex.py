@@ -121,6 +121,39 @@ def _set_codex_model(settings: Settings) -> None:
     cfg.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
+def sync_active_provider(settings: Settings, provider: str) -> None:
+    """Keep auth.json active_provider consistent with the chosen chat provider.
+
+    Hermes prefers auth.json active_provider over config.yaml model.provider —
+    so switching to an API-key provider while active_provider=openai-codex
+    silently keeps routing through Codex, and switching back to Codex needs
+    active_provider restored (credentials stay in credential_pool, no re-OAuth).
+    """
+    af = _auth_file(settings)
+    if not af.exists():
+        return
+    try:
+        data = json.loads(af.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    if not isinstance(data, dict):
+        return
+
+    active = data.get("active_provider")
+    changed = False
+    if provider in _MODEL_PROVIDER_ALIASES:
+        if _has_codex_token(settings) and active not in _CODEX_AUTH_KEYS:
+            data["active_provider"] = _AUTH_PROVIDER
+            changed = True
+    elif active in _CODEX_AUTH_KEYS:
+        data["active_provider"] = None
+        changed = True
+
+    if changed:
+        af.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("auth.json active_provider -> %s", data["active_provider"])
+
+
 # ─── start ───────────────────────────────────────────────────────────────────
 
 
@@ -210,10 +243,18 @@ async def codex_status(
     background_tasks: BackgroundTasks,
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> ApiResponse:
-    """Report Codex auth state. On first success, set model + restart gateway."""
+    """Report Codex auth state. Pin the model only when appropriate.
+
+    The dashboard polls this endpoint to render the ChatGPT badge, so it MUST
+    NOT fight an explicit provider choice: if the user configured another
+    provider (API key) while a Codex token still sits in auth.json, leave
+    config.yaml alone (else every poll flips the provider back to Codex and
+    restarts the gateway — "API key config never saves"). We only pin when:
+      - a device flow started from the dashboard just completed, or
+      - no provider is configured at all (fresh install / stray import), or
+      - provider is already codex but default model is missing/dead (repair).
+    """
     if _has_codex_token(settings):
-        # Wire the bot to Codex the first time we observe a token. Idempotent —
-        # config write + restart are cheap and only matter once.
         try:
             import yaml
 
@@ -222,16 +263,21 @@ async def codex_status(
             cfg = settings.hermes_home / "config.yaml"
             data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
             model_cfg = data.get("model") or {}
-            # "already" only when BOTH provider and a supported default model
-            # are in place — a missing/dead model.default still needs fixing.
+            provider_cfg = str(model_cfg.get("provider") or "").strip()
+            is_codex_cfg = provider_cfg in _MODEL_PROVIDER_ALIASES
             already = (
-                model_cfg.get("provider") == _MODEL_PROVIDER
+                provider_cfg == _MODEL_PROVIDER
                 and model_cfg.get("default") in CODEX_SUPPORTED_MODELS
             )
         except Exception:
-            already = False
-        if not already:
+            provider_cfg, is_codex_cfg, already = "", False, False
+
+        flow_completed = _flow.get("proc") is not None
+        should_pin = not already and (flow_completed or not provider_cfg or is_codex_cfg)
+        if should_pin:
             _set_codex_model(settings)
+            sync_active_provider(settings, _MODEL_PROVIDER)
+            _flow["proc"] = None  # consume the flow so later polls stay passive
 
             async def _restart_gw() -> None:
                 try:
@@ -240,7 +286,17 @@ async def codex_status(
                     logger.error("gateway restart after Codex auth failed: %s", exc)
 
             background_tasks.add_task(_restart_gw)
-        return ApiResponse(ok=True, data={"status": "connected", "model_set": True})
+        # active: Codex is the provider the bot actually uses. A token can sit
+        # in auth.json while another provider is selected ("connected" badge,
+        # active=false) — re-selecting Codex then needs no new OAuth.
+        return ApiResponse(
+            ok=True,
+            data={
+                "status": "connected",
+                "model_set": should_pin or already,
+                "active": should_pin or is_codex_cfg,
+            },
+        )
 
     proc = _flow.get("proc")
     if proc is not None and proc.returncode is None:
@@ -295,6 +351,7 @@ async def codex_import(
     f.write_text(json.dumps(parsed, indent=2), encoding="utf-8")
     f.chmod(0o600)
     _set_codex_model(settings)
+    sync_active_provider(settings, _MODEL_PROVIDER)
 
     async def _restart_gw() -> None:
         try:
