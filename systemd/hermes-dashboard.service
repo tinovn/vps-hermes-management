@@ -17,7 +17,7 @@ Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-MemoryMax=512M
+MemoryMax=1024M
 
 [Install]
 WantedBy=multi-user.target

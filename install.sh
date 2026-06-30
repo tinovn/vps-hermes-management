@@ -736,6 +736,7 @@ cat > "${INSTALL_DIR}/Caddyfile" <<'CADDYFILE'
         # stays on its own port (9997) — its /api/* would conflict.
         reverse_proxy 127.0.0.1:9119 {
             header_up Host "localhost:9119"
+            header_up Origin "http://127.0.0.1:9119"
             flush_interval -1
             transport http {
                 read_timeout 24h
@@ -818,7 +819,7 @@ Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-MemoryMax=512M
+MemoryMax=1024M
 
 [Install]
 WantedBy=multi-user.target
