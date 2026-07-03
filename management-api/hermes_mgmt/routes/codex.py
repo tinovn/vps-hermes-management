@@ -176,13 +176,15 @@ async def codex_start() -> ApiResponse:
     env = os.environ.copy()
     env.setdefault("HERMES_HOME", "/root/.hermes")
     env.setdefault("HOME", "/root")
-    # --no-browser + --manual-paste forces the headless device-code path (print
-    # URL + code instead of trying to open a browser on the server).
+    # --no-browser forces the headless device-code path (print URL + code
+    # instead of trying to open a browser on the server). Do NOT add
+    # --manual-paste: Hermes >= 0.18 dropped that flag and argparse exits with
+    # a usage error before printing any URL.
     env["PYTHONUNBUFFERED"] = "1"
     try:
         proc = await asyncio.create_subprocess_exec(
             _HERMES_BIN, "auth", "add", _AUTH_PROVIDER,
-            "--type", "oauth", "--no-browser", "--manual-paste",
+            "--type", "oauth", "--no-browser",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             stdin=asyncio.subprocess.DEVNULL,
