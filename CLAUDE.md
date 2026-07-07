@@ -52,21 +52,21 @@ All 3 services are grouped under `hermes.target` for atomic start/stop.
 
 ## Paths
 
-| Path | Purpose |
-|------|---------|
-| `/opt/hermes/` | Install root (`hermes-agent/` source + helper files) |
-| `/opt/hermes/.env` | Service config — auth tokens, ports, domain. Loaded by systemd `EnvironmentFile=` for all 3 units |
-| `/root/.hermes/` | `HERMES_HOME` — Hermes's own store: `config.yaml`, `.env` (provider keys), sessions, skills, logs. Services run as `User=root` with default `HOME=/root`, so the CLI default `~/.hermes` resolves here too — keeps CLI / Web Dashboard / mgmt-api on the same store |
-| `/opt/hermes/hermes-agent/` | Upstream Hermes git clone (editable uv venv) |
-| `/opt/hermes/Caddyfile` | Caddy config (uses `$DOMAIN` + `$CADDY_TLS` from .env) |
-| `/opt/hermes-mgmt/` | Management API Python package + uv venv |
-| `/opt/hermes-rag/` | RAG MCP service (opt-in): `hermes_rag/` package + uv venv, `data/rag.db`, `docs/` (ingest source), `models/` (fastembed cache) |
-| `/etc/hermes/config/` | Read-only provider/channel JSON templates |
-| `/etc/systemd/system/hermes.target` | Meta-target grouping 3 units |
-| `/etc/systemd/system/hermes-*.service` | Unit files for each service |
-| `/etc/systemd/system/caddy.service.d/override.conf` | Caddy EnvironmentFile + Caddyfile override |
-| `/var/log/hermes-install.log` | install.sh transcript |
-| `/var/log/caddy/access.log` | Caddy access log (rotated) |
+| Path                                                | Purpose                                                                                                                                                                                                                                                             |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/opt/hermes/`                                      | Install root (`hermes-agent/` source + helper files)                                                                                                                                                                                                                |
+| `/opt/hermes/.env`                                  | Service config — auth tokens, ports, domain. Loaded by systemd `EnvironmentFile=` for all 3 units                                                                                                                                                                   |
+| `/root/.hermes/`                                    | `HERMES_HOME` — Hermes's own store: `config.yaml`, `.env` (provider keys), sessions, skills, logs. Services run as `User=root` with default `HOME=/root`, so the CLI default `~/.hermes` resolves here too — keeps CLI / Web Dashboard / mgmt-api on the same store |
+| `/opt/hermes/hermes-agent/`                         | Upstream Hermes git clone (editable uv venv)                                                                                                                                                                                                                        |
+| `/opt/hermes/Caddyfile`                             | Caddy config (uses `$DOMAIN` + `$CADDY_TLS` from .env)                                                                                                                                                                                                              |
+| `/opt/hermes-mgmt/`                                 | Management API Python package + uv venv                                                                                                                                                                                                                             |
+| `/opt/hermes-rag/`                                  | RAG MCP service (opt-in): `hermes_rag/` package + uv venv, `data/rag.db`, `docs/` (ingest source), `models/` (fastembed cache)                                                                                                                                      |
+| `/etc/hermes/config/`                               | Read-only provider/channel JSON templates                                                                                                                                                                                                                           |
+| `/etc/systemd/system/hermes.target`                 | Meta-target grouping 3 units                                                                                                                                                                                                                                        |
+| `/etc/systemd/system/hermes-*.service`              | Unit files for each service                                                                                                                                                                                                                                         |
+| `/etc/systemd/system/caddy.service.d/override.conf` | Caddy EnvironmentFile + Caddyfile override                                                                                                                                                                                                                          |
+| `/var/log/hermes-install.log`                       | install.sh transcript                                                                                                                                                                                                                                               |
+| `/var/log/caddy/access.log`                         | Caddy access log (rotated)                                                                                                                                                                                                                                          |
 
 ## Critical invariants
 
@@ -124,13 +124,30 @@ hermes_mgmt/
     ├── auth_routes.py   /login, /api/auth/* (login, create-user, change-password, etc.)
     ├── env_routes.py    /api/env, /api/env/{key} (PUT/DELETE)
     ├── cli_routes.py    POST /api/cli — run whitelisted subcommand
-    └── zalo.py          /api/zalo/{status,connect,qr,disconnect} — proxy to Zalo Node sidecar (127.0.0.1:3838)
+    ├── zalo.py          /api/zalo/{status,connect,qr,disconnect} — proxy to Zalo Node sidecar (127.0.0.1:3838)
+    └── whatsapp.py      /api/whatsapp/{status,install,install-status,connect,qr,enable,disconnect,logs} — Baileys install + QR pairing + enable
 ```
 
 The Zalo routes proxy the local Node sidecar (bound to 127.0.0.1, unreachable
 externally) through mgmt-api so the dashboard can drive QR login for low-tech
 users: click connect → scan QR shown in the page → owner uid auto-persisted to
 both .env stores. See `routes/zalo.py`.
+
+The WhatsApp routes give the same dashboard QR-login UX for the Hermes Baileys
+bridge. The bridge deps (Baileys) are NOT installed at VPS-provision time — they
+compile TypeScript (~2-4 min, >1GB RAM), so the dashboard installs them on demand
+via `POST /api/whatsapp/install` (a detached job; poll `/install-status`). That
+job is self-contained and fixes the two things that break a fresh VPS: Baileys'
+`ssh://git@github.com` sub-dep (git `insteadOf` HTTPS rewrite — needs `--add`, one
+key holds both values) and OOM on low-RAM boxes (adds a 2G swapfile). Critically
+it runs `npm install` inside a `systemd-run --scope` so the build escapes
+mgmt's own `MemoryMax=512M` cgroup (else SIGABRT/code 134). `_bridge_installed`
+checks the built `lib/index.js`, not just the package dir (npm creates the dir
+early, mid-build). `/connect` is gated on install; it spawns a pairing sidecar
+(`assets/whatsapp_pair.mjs`, copied into the bridge dir to reuse Baileys) that
+captures the raw QR string, rendered to PNG via `segno`. Enabling needs only env —
+`WHATSAPP_ENABLED=true` makes gateway/config.py create `PlatformConfig(enabled=True)`,
+no config.yaml edit. See `routes/whatsapp.py`.
 
 Response envelope: `ApiResponse(ok: bool, data: Any | None, error: str | None)`.
 

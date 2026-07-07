@@ -15,6 +15,8 @@
 #   --skip-hermes  Skip Hermes Agent install (useful for mgmt-api-only updates)
 #   --with-rag   Install the local RAG MCP service + register it with Hermes
 #   --skip-zalo  Skip the Zalo personal plugin (installed by default)
+# WhatsApp bridge deps are NOT installed here — the dashboard installs them
+# on demand via POST /api/whatsapp/install (see management-api routes/whatsapp.py).
 # =============================================================================
 
 set -euo pipefail
@@ -478,6 +480,12 @@ PYEOF
 else
   log "Skipping Zalo plugin (--skip-zalo or --skip-hermes)"
 fi
+
+# NOTE: WhatsApp bridge deps (Baileys) are intentionally NOT installed here.
+# The dashboard installs them on demand via POST /api/whatsapp/install, which
+# handles the prerequisites (git HTTPS rewrite for Baileys' ssh sub-dep, plus a
+# swapfile on low-RAM boxes so the TypeScript build doesn't OOM). See
+# management-api/hermes_mgmt/routes/whatsapp.py.
 
 # ---- 12. Generate tokens + .env ------------------------------------------
 # Token precedence (highest -> lowest):
