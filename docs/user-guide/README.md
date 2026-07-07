@@ -13,7 +13,6 @@ Bộ tài liệu thao tác trên **Dashboard quản trị** (và Management API 
 | 5 | [Vai trò & quy tắc bot](05-vai-tro-quy-tac-bot.md) | Chọn vai trò (CSKH, sales, spa...), quy tắc an toàn |
 | 6 | [Vận hành & giám sát](06-van-hanh-giam-sat.md) | Trạng thái, log, restart, nâng cấp, cron, OpenViking |
 | 7 | [Checklist onboarding khách mới](07-checklist-onboarding.md) | Quy trình triển khai từ A→Z cho khách hàng mới |
-| 8 | [Kết nối WhatsApp](08-ket-noi-whatsapp.md) | Quét QR kết nối bot WhatsApp (Baileys), chọn mode + bật, **API tích hợp dashboard** |
 
 ## Kiến trúc hệ thống (tóm tắt)
 

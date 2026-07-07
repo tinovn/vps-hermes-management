@@ -375,7 +375,6 @@ if [[ ! -d .git ]]; then
              hermes_mgmt/routes/logs.py hermes_mgmt/routes/auth_routes.py \
              hermes_mgmt/routes/env_routes.py hermes_mgmt/routes/cli_routes.py \
              hermes_mgmt/routes/zalo.py hermes_mgmt/routes/openviking.py \
-             hermes_mgmt/routes/whatsapp.py hermes_mgmt/assets/whatsapp_pair.mjs \
              hermes_mgmt/routes/codex.py hermes_mgmt/routes/roles.py; do
       mkdir -p "$(dirname "${MGMT_DIR}/${f}")"
       curl -fsSL "${MGMT_REPO_RAW}/management-api/${f}" -o "${MGMT_DIR}/${f}" \

@@ -52,21 +52,21 @@ All 3 services are grouped under `hermes.target` for atomic start/stop.
 
 ## Paths
 
-| Path | Purpose |
-|------|---------|
-| `/opt/hermes/` | Install root (`hermes-agent/` source + helper files) |
-| `/opt/hermes/.env` | Service config — auth tokens, ports, domain. Loaded by systemd `EnvironmentFile=` for all 3 units |
-| `/root/.hermes/` | `HERMES_HOME` — Hermes's own store: `config.yaml`, `.env` (provider keys), sessions, skills, logs. Services run as `User=root` with default `HOME=/root`, so the CLI default `~/.hermes` resolves here too — keeps CLI / Web Dashboard / mgmt-api on the same store |
-| `/opt/hermes/hermes-agent/` | Upstream Hermes git clone (editable uv venv) |
-| `/opt/hermes/Caddyfile` | Caddy config (uses `$DOMAIN` + `$CADDY_TLS` from .env) |
-| `/opt/hermes-mgmt/` | Management API Python package + uv venv |
-| `/opt/hermes-rag/` | RAG MCP service (opt-in): `hermes_rag/` package + uv venv, `data/rag.db`, `docs/` (ingest source), `models/` (fastembed cache) |
-| `/etc/hermes/config/` | Read-only provider/channel JSON templates |
-| `/etc/systemd/system/hermes.target` | Meta-target grouping 3 units |
-| `/etc/systemd/system/hermes-*.service` | Unit files for each service |
-| `/etc/systemd/system/caddy.service.d/override.conf` | Caddy EnvironmentFile + Caddyfile override |
-| `/var/log/hermes-install.log` | install.sh transcript |
-| `/var/log/caddy/access.log` | Caddy access log (rotated) |
+| Path                                                | Purpose                                                                                                                                                                                                                                                             |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/opt/hermes/`                                      | Install root (`hermes-agent/` source + helper files)                                                                                                                                                                                                                |
+| `/opt/hermes/.env`                                  | Service config — auth tokens, ports, domain. Loaded by systemd `EnvironmentFile=` for all 3 units                                                                                                                                                                   |
+| `/root/.hermes/`                                    | `HERMES_HOME` — Hermes's own store: `config.yaml`, `.env` (provider keys), sessions, skills, logs. Services run as `User=root` with default `HOME=/root`, so the CLI default `~/.hermes` resolves here too — keeps CLI / Web Dashboard / mgmt-api on the same store |
+| `/opt/hermes/hermes-agent/`                         | Upstream Hermes git clone (editable uv venv)                                                                                                                                                                                                                        |
+| `/opt/hermes/Caddyfile`                             | Caddy config (uses `$DOMAIN` + `$CADDY_TLS` from .env)                                                                                                                                                                                                              |
+| `/opt/hermes-mgmt/`                                 | Management API Python package + uv venv                                                                                                                                                                                                                             |
+| `/opt/hermes-rag/`                                  | RAG MCP service (opt-in): `hermes_rag/` package + uv venv, `data/rag.db`, `docs/` (ingest source), `models/` (fastembed cache)                                                                                                                                      |
+| `/etc/hermes/config/`                               | Read-only provider/channel JSON templates                                                                                                                                                                                                                           |
+| `/etc/systemd/system/hermes.target`                 | Meta-target grouping 3 units                                                                                                                                                                                                                                        |
+| `/etc/systemd/system/hermes-*.service`              | Unit files for each service                                                                                                                                                                                                                                         |
+| `/etc/systemd/system/caddy.service.d/override.conf` | Caddy EnvironmentFile + Caddyfile override                                                                                                                                                                                                                          |
+| `/var/log/hermes-install.log`                       | install.sh transcript                                                                                                                                                                                                                                               |
+| `/var/log/caddy/access.log`                         | Caddy access log (rotated)                                                                                                                                                                                                                                          |
 
 ## Critical invariants
 
