@@ -44,6 +44,9 @@ _MGMT_FILES = (
     "hermes_mgmt/systemd_ctl.py",
     "hermes_mgmt/cli_runner.py",
     "hermes_mgmt/hermes_fs.py",
+    # Non-route asset (WhatsApp pairing sidecar) — not under routes/, so it
+    # would be missed by the dynamic routes/ refresh. Keep it here explicitly.
+    "hermes_mgmt/assets/whatsapp_pair.mjs",
 )
 
 
