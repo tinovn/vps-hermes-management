@@ -124,13 +124,24 @@ hermes_mgmt/
     ├── auth_routes.py   /login, /api/auth/* (login, create-user, change-password, etc.)
     ├── env_routes.py    /api/env, /api/env/{key} (PUT/DELETE)
     ├── cli_routes.py    POST /api/cli — run whitelisted subcommand
-    └── zalo.py          /api/zalo/{status,connect,qr,disconnect} — proxy to Zalo Node sidecar (127.0.0.1:3838)
+    ├── zalo.py          /api/zalo/{status,connect,qr,disconnect} — proxy to Zalo Node sidecar (127.0.0.1:3838)
+    └── whatsapp.py      /api/whatsapp/{status,connect,qr,enable,disconnect,logs} — Baileys QR pairing + enable
 ```
 
 The Zalo routes proxy the local Node sidecar (bound to 127.0.0.1, unreachable
 externally) through mgmt-api so the dashboard can drive QR login for low-tech
 users: click connect → scan QR shown in the page → owner uid auto-persisted to
 both .env stores. See `routes/zalo.py`.
+
+The WhatsApp routes give the same dashboard QR-login UX for the Hermes Baileys
+bridge. The bridge itself never exposes its QR over HTTP (ASCII-only to stdout),
+so mgmt spawns a small pairing sidecar (`hermes_mgmt/assets/whatsapp_pair.mjs`,
+copied into the bridge dir at connect time to reuse its Baileys node_modules)
+that captures the raw QR string; mgmt renders it to PNG via `segno`. Enabling
+needs only env — `WHATSAPP_ENABLED=true` makes gateway/config.py create
+`PlatformConfig(enabled=True)`, no config.yaml edit. Pairing writes creds to the
+shared session dir, the sidecar exits, then the gateway bridge reconnects.
+Pre-install the bridge deps with `install.sh --with-whatsapp`. See `routes/whatsapp.py`.
 
 Response envelope: `ApiResponse(ok: bool, data: Any | None, error: str | None)`.
 
