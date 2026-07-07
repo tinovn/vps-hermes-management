@@ -15,8 +15,6 @@
 #   --skip-hermes  Skip Hermes Agent install (useful for mgmt-api-only updates)
 #   --with-rag   Install the local RAG MCP service + register it with Hermes
 #   --skip-zalo  Skip the Zalo personal plugin (installed by default)
-#   --with-whatsapp  Pre-install the WhatsApp (Baileys) bridge deps so dashboard
-#                    QR pairing is instant (pairing still needs a phone scan)
 # =============================================================================
 
 set -euo pipefail
@@ -53,7 +51,6 @@ HERMES_REF="main"
 SKIP_HERMES=false
 WITH_RAG=true
 WITH_ZALO=true
-WITH_WHATSAPP=false
 while [[ $# -gt 0 ]]; do
   case $1 in
     --mgmt-key)   MGMT_API_KEY_ARG="$2"; shift 2 ;;
@@ -62,9 +59,8 @@ while [[ $# -gt 0 ]]; do
     --skip-hermes) SKIP_HERMES=true; shift ;;
     --with-rag)   WITH_RAG=true; shift ;;
     --skip-zalo)  WITH_ZALO=false; shift ;;
-    --with-whatsapp) WITH_WHATSAPP=true; shift ;;
     -h|--help)
-      sed -n '3,16p' "$0" | sed 's/^# //' | sed 's/^#$//'
+      sed -n '3,14p' "$0" | sed 's/^# //' | sed 's/^#$//'
       exit 0 ;;
     *) shift ;;
   esac
@@ -377,7 +373,6 @@ if [[ ! -d .git ]]; then
              hermes_mgmt/routes/logs.py hermes_mgmt/routes/auth_routes.py \
              hermes_mgmt/routes/env_routes.py hermes_mgmt/routes/cli_routes.py \
              hermes_mgmt/routes/zalo.py hermes_mgmt/routes/openviking.py \
-             hermes_mgmt/routes/whatsapp.py hermes_mgmt/assets/whatsapp_pair.mjs \
              hermes_mgmt/routes/codex.py hermes_mgmt/routes/roles.py; do
       mkdir -p "$(dirname "${MGMT_DIR}/${f}")"
       curl -fsSL "${MGMT_REPO_RAW}/management-api/${f}" -o "${MGMT_DIR}/${f}" \
@@ -482,34 +477,6 @@ PYEOF
   fi
 else
   log "Skipping Zalo plugin (--skip-zalo or --skip-hermes)"
-fi
-
-# ---- 11c. Pre-install WhatsApp (Baileys) bridge deps ---------------------
-# The Hermes WhatsApp bridge (scripts/whatsapp-bridge) auto-installs its npm
-# deps on first gateway start, but that git-pinned Baileys pull takes minutes.
-# With --with-whatsapp we front-load it so the dashboard QR-pairing flow (via
-# mgmt-api /api/whatsapp/*) is instant. Baileys is pure JS — Node (already
-# installed at step 6b) is the only prerequisite; no Chromium. This only
-# installs deps; pairing still needs an interactive phone QR scan afterwards.
-if [[ "${WITH_WHATSAPP}" == true && "${SKIP_HERMES}" == false ]]; then
-  step "11c. Pre-install WhatsApp bridge deps"
-  WA_BRIDGE_DIR="${HERMES_SRC_DIR}/scripts/whatsapp-bridge"
-  if [[ -f "${WA_BRIDGE_DIR}/package.json" ]]; then
-    log "Installing WhatsApp bridge Node deps (Baileys) — may take a few minutes..."
-    if (cd "${WA_BRIDGE_DIR}" && npm install --no-audit --no-fund --loglevel=error) >>"${LOG_FILE}" 2>&1; then
-      # Write the stamp Hermes checks so the gateway skips a redundant reinstall
-      # (sha256(package.json)[:16]) — mirrors adapter.py _file_content_hash.
-      WA_HASH=$(sha256sum "${WA_BRIDGE_DIR}/package.json" | cut -c1-16)
-      echo -n "${WA_HASH}" > "${WA_BRIDGE_DIR}/node_modules/.hermes-pkg-hash" 2>/dev/null || true
-      log "WhatsApp bridge deps installed. Pair later from the dashboard (scan QR)."
-    else
-      log "WARN: WhatsApp bridge npm install failed — the gateway will retry on first use"
-    fi
-  else
-    log "WARN: WhatsApp bridge not found at ${WA_BRIDGE_DIR} — skipping deps pre-install"
-  fi
-else
-  [[ "${WITH_WHATSAPP}" == true ]] && log "Skipping WhatsApp bridge deps (--skip-hermes)"
 fi
 
 # ---- 12. Generate tokens + .env ------------------------------------------
