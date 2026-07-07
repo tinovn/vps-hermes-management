@@ -20,6 +20,15 @@ def _write_creds(settings: Settings, legacy: bool = False) -> None:
     (session / "creds.json").write_text("{}", encoding="utf-8")
 
 
+def _mark_installed(settings: Settings) -> None:
+    """Create the Baileys build artifact so _bridge_installed() reports installed."""
+    bridge = settings.install_dir / "hermes-agent" / "scripts" / "whatsapp-bridge"
+    lib = bridge / "node_modules" / "@whiskeysockets" / "baileys" / "lib"
+    lib.mkdir(parents=True, exist_ok=True)
+    (lib / "index.js").write_text("// baileys", encoding="utf-8")
+    (bridge / "package.json").write_text('{"name":"bridge"}', encoding="utf-8")
+
+
 # ─── status ──────────────────────────────────────────────────────────────────
 
 
@@ -27,15 +36,30 @@ def test_whatsapp_status_requires_auth(client: TestClient) -> None:
     assert client.get("/api/whatsapp/status").status_code == 401
 
 
-def test_whatsapp_status_disconnected(client: TestClient, auth_headers: dict) -> None:
+def test_whatsapp_status_not_installed(client: TestClient, auth_headers: dict) -> None:
+    # Fresh box: bridge deps not installed → status not_installed.
     with patch("hermes_mgmt.routes.whatsapp._port_open", return_value=False):
         resp = client.get("/api/whatsapp/status", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()["data"]
-    assert data["status"] == "disconnected"
+    assert data["status"] == "not_installed"
+    assert data["bridge_installed"] is False
+    assert data["install_state"] == "not_installed"
     assert data["paired"] is False
     assert data["enabled"] is False
     assert data["valid_modes"] == ["bot", "self-chat"]
+
+
+def test_whatsapp_status_disconnected_when_installed(
+    client: TestClient, auth_headers: dict, test_settings: Settings
+) -> None:
+    # Installed but nothing paired → disconnected (ready to Connect).
+    _mark_installed(test_settings)
+    with patch("hermes_mgmt.routes.whatsapp._port_open", return_value=False):
+        resp = client.get("/api/whatsapp/status", headers=auth_headers)
+    data = resp.json()["data"]
+    assert data["bridge_installed"] is True
+    assert data["status"] == "disconnected"
 
 
 def test_whatsapp_status_paired_not_enabled(
@@ -106,11 +130,19 @@ def test_whatsapp_status_pending_from_sidecar(
 # ─── connect ─────────────────────────────────────────────────────────────────
 
 
-def test_whatsapp_connect_pending(client: TestClient, auth_headers: dict) -> None:
-    with (
-        patch("hermes_mgmt.routes.whatsapp._ensure_deps", AsyncMock(return_value=True)),
-        patch("hermes_mgmt.routes.whatsapp._ensure_sidecar", AsyncMock(return_value=True)),
-    ):
+def test_whatsapp_connect_gated_when_not_installed(
+    client: TestClient, auth_headers: dict
+) -> None:
+    # Bridge not installed → connect refused with 409 (install first).
+    resp = client.post("/api/whatsapp/connect", headers=auth_headers, json={})
+    assert resp.status_code == 409
+
+
+def test_whatsapp_connect_pending(
+    client: TestClient, auth_headers: dict, test_settings: Settings
+) -> None:
+    _mark_installed(test_settings)
+    with patch("hermes_mgmt.routes.whatsapp._ensure_sidecar", AsyncMock(return_value=True)):
         resp = client.post("/api/whatsapp/connect", headers=auth_headers, json={})
     assert resp.status_code == 200
     data = resp.json()["data"]
@@ -121,7 +153,7 @@ def test_whatsapp_connect_pending(client: TestClient, auth_headers: dict) -> Non
 def test_whatsapp_connect_already_paired(
     client: TestClient, auth_headers: dict, test_settings: Settings
 ) -> None:
-    _write_creds(test_settings)
+    _write_creds(test_settings)  # paired short-circuits before the install gate
     resp = client.post("/api/whatsapp/connect", headers=auth_headers, json={})
     assert resp.status_code == 200
     assert resp.json()["data"]["status"] == "paired"
@@ -135,28 +167,98 @@ def test_whatsapp_connect_invalid_mode(client: TestClient, auth_headers: dict) -
 def test_whatsapp_connect_stores_mode(
     client: TestClient, auth_headers: dict, test_settings: Settings
 ) -> None:
-    with (
-        patch("hermes_mgmt.routes.whatsapp._ensure_deps", AsyncMock(return_value=True)),
-        patch("hermes_mgmt.routes.whatsapp._ensure_sidecar", AsyncMock(return_value=True)),
-    ):
+    _mark_installed(test_settings)
+    with patch("hermes_mgmt.routes.whatsapp._ensure_sidecar", AsyncMock(return_value=True)):
         resp = client.post("/api/whatsapp/connect", headers=auth_headers, json={"mode": "bot"})
     assert resp.status_code == 200
     assert read_env(test_settings.env_file).get("WHATSAPP_MODE") == "bot"
 
 
-def test_whatsapp_connect_deps_fail(client: TestClient, auth_headers: dict) -> None:
-    with patch("hermes_mgmt.routes.whatsapp._ensure_deps", AsyncMock(return_value=False)):
+def test_whatsapp_connect_sidecar_fail(
+    client: TestClient, auth_headers: dict, test_settings: Settings
+) -> None:
+    _mark_installed(test_settings)
+    with patch("hermes_mgmt.routes.whatsapp._ensure_sidecar", AsyncMock(return_value=False)):
         resp = client.post("/api/whatsapp/connect", headers=auth_headers, json={})
     assert resp.status_code == 503
 
 
-def test_whatsapp_connect_sidecar_fail(client: TestClient, auth_headers: dict) -> None:
-    with (
-        patch("hermes_mgmt.routes.whatsapp._ensure_deps", AsyncMock(return_value=True)),
-        patch("hermes_mgmt.routes.whatsapp._ensure_sidecar", AsyncMock(return_value=False)),
+# ─── install (dashboard "Install WhatsApp bridge" button) ────────────────────
+
+
+def test_whatsapp_install_starts(client: TestClient, auth_headers: dict) -> None:
+    with patch(
+        "hermes_mgmt.routes.whatsapp._start_install", AsyncMock(return_value="installing")
     ):
-        resp = client.post("/api/whatsapp/connect", headers=auth_headers, json={})
+        resp = client.post("/api/whatsapp/install", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json()["data"]["install_state"] == "installing"
+
+
+def test_whatsapp_install_already_installed(
+    client: TestClient, auth_headers: dict, test_settings: Settings
+) -> None:
+    _mark_installed(test_settings)
+    resp = client.post("/api/whatsapp/install", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json()["data"]["install_state"] == "installed"
+
+
+def test_whatsapp_install_no_bridge(client: TestClient, auth_headers: dict) -> None:
+    # No bridge package.json at all → 503.
+    resp = client.post("/api/whatsapp/install", headers=auth_headers)
     assert resp.status_code == 503
+
+
+def test_whatsapp_install_status_reports_state_and_log(
+    client: TestClient, auth_headers: dict, test_settings: Settings
+) -> None:
+    _mark_installed(test_settings)
+    bridge = test_settings.install_dir / "hermes-agent" / "scripts" / "whatsapp-bridge"
+    (bridge / ".hermes-install.log").write_text("line1\nline2\n", encoding="utf-8")
+    resp = client.get("/api/whatsapp/install-status", headers=auth_headers)
+    data = resp.json()["data"]
+    assert data["install_state"] == "installed"
+    assert data["installed"] is True
+    assert data["log"][-1] == "line2"
+
+
+def test_install_state_transitions(test_settings: Settings) -> None:
+    from hermes_mgmt.routes import whatsapp as wa
+
+    bridge = test_settings.install_dir / "hermes-agent" / "scripts" / "whatsapp-bridge"
+    bridge.mkdir(parents=True, exist_ok=True)
+    # nothing yet
+    assert wa._install_state(test_settings) == "not_installed"
+    # failed marker
+    (bridge / ".hermes-install.failed").write_text("boom", encoding="utf-8")
+    assert wa._install_state(test_settings) == "failed"
+    # installed wins over the stale failed marker
+    _mark_installed(test_settings)
+    assert wa._install_state(test_settings) == "installed"
+
+
+def test_install_state_partial_dir_not_installed(test_settings: Settings) -> None:
+    # Regression: npm creates an EMPTY baileys dir early during install. Without
+    # a lib/index.js build artifact it must NOT count as installed.
+    from hermes_mgmt.routes import whatsapp as wa
+
+    bridge = test_settings.install_dir / "hermes-agent" / "scripts" / "whatsapp-bridge"
+    (bridge / "node_modules" / "@whiskeysockets" / "baileys").mkdir(parents=True)
+    assert wa._bridge_installed(test_settings) is False
+    assert wa._install_state(test_settings) == "not_installed"
+
+
+def test_install_state_running_beats_partial_dir(test_settings: Settings) -> None:
+    # A live install job → "installing" even though the partial dir exists.
+    import os
+
+    from hermes_mgmt.routes import whatsapp as wa
+
+    bridge = test_settings.install_dir / "hermes-agent" / "scripts" / "whatsapp-bridge"
+    (bridge / "node_modules" / "@whiskeysockets" / "baileys").mkdir(parents=True)
+    (bridge / ".hermes-install.pid").write_text(str(os.getpid()))  # a live pid
+    assert wa._install_state(test_settings) == "installing"
 
 
 # ─── self-heal pairing asset (upgrade path) ──────────────────────────────────

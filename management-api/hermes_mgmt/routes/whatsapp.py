@@ -22,7 +22,6 @@ makes gateway/config.py create ``PlatformConfig(enabled=True)`` for the platform
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import io
 import logging
 import os
@@ -55,8 +54,6 @@ _DEFAULT_PAIR_PORT = 3999
 _DEFAULT_BRIDGE_PORT = 3000  # gateway bridge default (bridge.js PORT)
 _VALID_MODES = {"bot", "self-chat"}
 _SIDECAR_TIMEOUT = 8.0
-# npm install of the git-pinned Baileys can be slow on small VPS.
-_NPM_TIMEOUT = 300
 
 _PAIR_ASSET = Path(__file__).resolve().parent.parent / "assets" / "whatsapp_pair.mjs"
 _PAIR_ASSET_RAW = (
@@ -165,50 +162,154 @@ def _port_open(port: int) -> bool:
         return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
-def _pkg_hash(bridge_dir: Path) -> str:
+# ── bridge dependency install (explicit, async — dashboard "Install" button) ─
+# Baileys is a git-pinned dep that compiles TypeScript at install time, so
+# `npm install` takes minutes and peaks >1GB RAM. We run it as a DETACHED
+# background job (never blocks the request) and track state via files under the
+# bridge dir. The job is self-contained: it fixes the two things that make a
+# fresh VPS fail — Baileys' ssh:// git sub-dep (rewrite to HTTPS) and OOM on
+# low-RAM boxes (add a swapfile) — then installs and stamps.
+
+
+def _install_pidfile(settings: Settings) -> Path:
+    return _bridge_dir(settings) / ".hermes-install.pid"
+
+
+def _install_log(settings: Settings) -> Path:
+    return _bridge_dir(settings) / ".hermes-install.log"
+
+
+def _install_fail_marker(settings: Settings) -> Path:
+    return _bridge_dir(settings) / ".hermes-install.failed"
+
+
+def _bridge_installed(settings: Settings) -> bool:
+    """True once Baileys is actually built — check the compiled entrypoint, not
+    just the package dir. npm creates node_modules/@whiskeysockets/baileys early
+    during install (before the tsc build finishes), so the dir alone would report
+    "installed" mid-build; lib/index.js only exists once the build completed."""
+    return (
+        _bridge_dir(settings)
+        / "node_modules" / "@whiskeysockets" / "baileys" / "lib" / "index.js"
+    ).exists()
+
+
+def _install_running(settings: Settings) -> bool:
+    """True while the detached install job is still alive (by pidfile)."""
+    pidfile = _install_pidfile(settings)
     try:
-        return hashlib.sha256((bridge_dir / "package.json").read_bytes()).hexdigest()[:16]
-    except OSError:
-        return ""
+        pid = int(pidfile.read_text().strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        pidfile.unlink(missing_ok=True)  # stale
+        return False
+    except PermissionError:
+        return True
 
 
-# ── bridge deps + pairing sidecar lifecycle ─────────────────────────────────
+def _install_state(settings: Settings) -> str:
+    """One of: installed | installing | failed | not_installed.
 
-
-async def _ensure_deps(settings: Settings) -> bool:
-    """Ensure the bridge's node_modules exist (npm install if missing).
-
-    The gateway auto-installs these on first adapter start, but pairing needs
-    Baileys present *now*. Writes the same ``.hermes-pkg-hash`` stamp Hermes
-    uses so the gateway skips a redundant reinstall later.
+    Check "running" BEFORE "installed": while the job runs, npm may have created
+    a partial baileys dir, so a build-artifact check alone could flip to
+    installed mid-build. An in-flight job always means "installing".
     """
+    if _install_running(settings):
+        return "installing"
+    if _bridge_installed(settings):
+        return "installed"
+    if _install_fail_marker(settings).exists():
+        return "failed"
+    return "not_installed"
+
+
+# Self-contained installer: HTTPS git rewrite + swap-if-low-RAM + npm + stamp.
+_INSTALL_SCRIPT = r"""
+set +e
+BD={bridge}
+rm -f "$BD/.hermes-install.failed"
+# Baileys pulls libsignal-node via ssh://git@github.com — no key on a fresh VPS.
+# Rewrite SSH GitHub URLs to HTTPS. Both forms share one url key, so plain
+# `git config` would have the 2nd overwrite the 1st — use --add (after
+# --unset-all for idempotency) to keep BOTH the ssh:// and scp-style rules.
+git config --global --unset-all url."https://github.com/".insteadOf 2>/dev/null
+git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/" 2>/dev/null
+git config --global --add url."https://github.com/".insteadOf "git@github.com:" 2>/dev/null
+# Baileys' tsc build OOMs on ~2GB boxes with no swap — add a 2G swapfile.
+if ! swapon --show 2>/dev/null | grep -q .; then
+  MEM=$(awk '/MemTotal/{{print int($2/1024)}}' /proc/meminfo)
+  if [ "${{MEM:-0}}" -lt 3000 ] && [ ! -e /swapfile ]; then
+    if fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none; then
+      chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1 && swapon /swapfile 2>/dev/null && \
+        {{ grep -q /swapfile /etc/fstab 2>/dev/null || echo '/swapfile none swap sw 0 0' >> /etc/fstab; }}
+    fi
+  fi
+fi
+cd "$BD" || exit 1
+# The install job is a child of hermes-mgmt.service (MemoryMax=512M). Baileys'
+# tsc build peaks >1GB, so running it in that cgroup gets it OOM-killed
+# (SIGABRT / code 134). Run npm in its own transient systemd scope so it escapes
+# mgmt's memory cap (falls back to plain npm on non-systemd hosts).
+if command -v systemd-run >/dev/null 2>&1; then
+  systemd-run --scope --quiet -p MemoryMax=infinity -p MemorySwapMax=infinity \
+    npm install --no-audit --no-fund --loglevel=error
+else
+  npm install --no-audit --no-fund --loglevel=error
+fi
+if [ -f node_modules/@whiskeysockets/baileys/lib/index.js ]; then
+  sha256sum package.json | cut -c1-16 > node_modules/.hermes-pkg-hash
+else
+  echo "npm install failed — see this log above" > "$BD/.hermes-install.failed"
+fi
+rm -f "$BD/.hermes-install.pid"
+"""
+
+
+async def _start_install(settings: Settings) -> str:
+    """Kick off the detached install job. Returns the resulting install state.
+
+    Idempotent: no-op if already installed or an install is in flight.
+    """
+    if _bridge_installed(settings):
+        return "installed"
+    if _install_running(settings):
+        return "installing"
+
     bridge_dir = _bridge_dir(settings)
     if not (bridge_dir / "package.json").exists():
         logger.error("WhatsApp bridge not found at %s", bridge_dir)
-        return False
-    if (bridge_dir / "node_modules").exists():
-        return True
+        return "no_bridge"
+
+    _install_fail_marker(settings).unlink(missing_ok=True)
+    script = _INSTALL_SCRIPT.format(bridge=str(bridge_dir))
+    try:
+        log_fh = open(_install_log(settings), "wb")  # noqa: SIM115 — child inherits fd
+    except OSError as exc:
+        logger.error("Cannot open WhatsApp install log: %s", exc)
+        return "failed"
     try:
         proc = await asyncio.create_subprocess_exec(
-            "npm", "install", "--silent",
+            "bash", "-c", script,
             cwd=str(bridge_dir),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=log_fh,
+            stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,  # detach: survives this request
         )
-        _, err = await asyncio.wait_for(proc.communicate(), timeout=_NPM_TIMEOUT)
-    except (FileNotFoundError, OSError, asyncio.TimeoutError) as exc:
-        logger.error("npm install for WhatsApp bridge failed: %s", exc)
-        return False
-    if proc.returncode != 0:
-        logger.error("npm install returned %s: %s", proc.returncode, (err or b"")[:400])
-        return False
-    stamp = _pkg_hash(bridge_dir)
-    if stamp:
-        try:
-            (bridge_dir / "node_modules" / ".hermes-pkg-hash").write_text(stamp)
-        except OSError:
-            pass
-    return True
+    except (FileNotFoundError, OSError) as exc:
+        logger.error("Failed to spawn WhatsApp install job: %s", exc)
+        return "failed"
+    finally:
+        log_fh.close()  # child keeps its own dup of the fd
+    try:
+        _install_pidfile(settings).write_text(str(proc.pid))
+    except OSError:
+        pass
+    logger.info("WhatsApp bridge install started (pid %s)", proc.pid)
+    return "installing"
 
 
 async def _self_heal_asset() -> bool:
@@ -347,16 +448,21 @@ async def whatsapp_status(
 ) -> ApiResponse:
     """Aggregate state for the dashboard to poll.
 
-    data.status ∈ {connected, pending, paired, disconnected}:
-      connected    — enabled + gateway bridge is live
-      pending      — pairing sidecar is up, waiting for a QR scan
-      paired       — creds saved but WhatsApp not enabled yet (call /enable)
-      disconnected — nothing set up
+    data.status ∈ {connected, pending, paired, not_installed, installing,
+    install_failed, disconnected}:
+      not_installed  — bridge deps not installed yet (show "Install" button)
+      installing     — install job running (show progress)
+      install_failed — last install failed (show retry + log)
+      disconnected   — installed, nothing paired yet (show "Connect")
+      pending        — pairing sidecar up, waiting for a QR scan
+      paired         — creds saved but WhatsApp not enabled yet (call /enable)
+      connected      — enabled + gateway bridge is live
     """
     merged = _merged_env(settings)
     enabled = merged.get(_ENABLED_KEY, "").strip().lower() in {"true", "1", "yes"}
     mode = merged.get(_MODE_KEY, "").strip() or "self-chat"
     allowed = merged.get(_ALLOWED_KEY, "").strip()
+    install = _install_state(settings)  # installed | installing | failed | not_installed
     paired = _creds_path(settings).exists()
 
     sidecar_status = None
@@ -381,6 +487,12 @@ async def whatsapp_status(
         agg = "pending"
     elif paired:
         agg = "paired"
+    elif install == "installing":
+        agg = "installing"
+    elif install == "failed":
+        agg = "install_failed"
+    elif install != "installed":
+        agg = "not_installed"
     else:
         agg = "disconnected"
 
@@ -388,6 +500,8 @@ async def whatsapp_status(
         ok=True,
         data={
             "status": agg,
+            "bridge_installed": install == "installed",
+            "install_state": install,          # installed|installing|failed|not_installed
             "enabled": enabled,
             "mode": mode,
             "allowed_users": allowed,
@@ -397,6 +511,52 @@ async def whatsapp_status(
             "qr_ready": qr_ready,
             "valid_modes": sorted(_VALID_MODES),
         },
+    )
+
+
+@router.post("/api/whatsapp/install", response_model=ApiResponse)
+async def whatsapp_install(
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> ApiResponse:
+    """Install the WhatsApp bridge dependencies (Baileys) — the dashboard's
+    "Cài đặt WhatsApp bridge" button.
+
+    Runs a DETACHED job (git HTTPS rewrite + swap-if-low-RAM + npm install), so
+    this returns immediately. Poll /api/whatsapp/install-status (or /status) for
+    progress; only allow /connect once install_state == "installed".
+    """
+    state = await _start_install(settings)
+    if state == "no_bridge":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Không tìm thấy thư mục WhatsApp bridge (hermes-agent chưa cài xong?).",
+        )
+    if state == "failed":
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Không khởi động được tiến trình cài đặt. Xem log mgmt-api.",
+        )
+    return ApiResponse(ok=True, data={"install_state": state})
+
+
+@router.get("/api/whatsapp/install-status", response_model=ApiResponse)
+async def whatsapp_install_status(
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+    log_lines: int = 20,
+) -> ApiResponse:
+    """Progress of the bridge install: state + a tail of the install log."""
+    state = _install_state(settings)
+    log_lines = max(0, min(int(log_lines or 0), 200))
+    tail: list[str] = []
+    if log_lines:
+        try:
+            text = _install_log(settings).read_text(encoding="utf-8", errors="replace")
+            tail = text.splitlines()[-log_lines:]
+        except OSError:
+            tail = []
+    return ApiResponse(
+        ok=True,
+        data={"install_state": state, "installed": state == "installed", "log": tail},
     )
 
 
@@ -422,14 +582,16 @@ async def whatsapp_connect(
     if _creds_path(settings).exists():
         return ApiResponse(ok=True, data={"status": "paired", "qr_url": None})
 
-    if not await _ensure_deps(settings):
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Chưa cài được dependencies của WhatsApp bridge (Baileys). Kiểm tra "
-                "Node.js + đã clone hermes-agent, hoặc cài lại với install.sh --with-whatsapp."
-            ),
+    # Gate: bridge deps must be installed first (dashboard "Install" button).
+    if not _bridge_installed(settings):
+        state = _install_state(settings)
+        detail = (
+            "WhatsApp bridge đang được cài, đợi cài xong rồi kết nối."
+            if state == "installing"
+            else "Chưa cài WhatsApp bridge. Bấm 'Cài đặt WhatsApp bridge' trước khi kết nối."
         )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
     if not await _ensure_sidecar(settings):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

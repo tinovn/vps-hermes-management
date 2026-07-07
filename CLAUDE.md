@@ -125,7 +125,7 @@ hermes_mgmt/
     ├── env_routes.py    /api/env, /api/env/{key} (PUT/DELETE)
     ├── cli_routes.py    POST /api/cli — run whitelisted subcommand
     ├── zalo.py          /api/zalo/{status,connect,qr,disconnect} — proxy to Zalo Node sidecar (127.0.0.1:3838)
-    └── whatsapp.py      /api/whatsapp/{status,connect,qr,enable,disconnect,logs} — Baileys QR pairing + enable
+    └── whatsapp.py      /api/whatsapp/{status,install,install-status,connect,qr,enable,disconnect,logs} — Baileys install + QR pairing + enable
 ```
 
 The Zalo routes proxy the local Node sidecar (bound to 127.0.0.1, unreachable
@@ -134,14 +134,20 @@ users: click connect → scan QR shown in the page → owner uid auto-persisted 
 both .env stores. See `routes/zalo.py`.
 
 The WhatsApp routes give the same dashboard QR-login UX for the Hermes Baileys
-bridge. The bridge itself never exposes its QR over HTTP (ASCII-only to stdout),
-so mgmt spawns a small pairing sidecar (`hermes_mgmt/assets/whatsapp_pair.mjs`,
-copied into the bridge dir at connect time to reuse its Baileys node_modules)
-that captures the raw QR string; mgmt renders it to PNG via `segno`. Enabling
-needs only env — `WHATSAPP_ENABLED=true` makes gateway/config.py create
-`PlatformConfig(enabled=True)`, no config.yaml edit. Pairing writes creds to the
-shared session dir, the sidecar exits, then the gateway bridge reconnects.
-Pre-install the bridge deps with `install.sh --with-whatsapp`. See `routes/whatsapp.py`.
+bridge. The bridge deps (Baileys) are NOT installed at VPS-provision time — they
+compile TypeScript (~2-4 min, >1GB RAM), so the dashboard installs them on demand
+via `POST /api/whatsapp/install` (a detached job; poll `/install-status`). That
+job is self-contained and fixes the two things that break a fresh VPS: Baileys'
+`ssh://git@github.com` sub-dep (git `insteadOf` HTTPS rewrite — needs `--add`, one
+key holds both values) and OOM on low-RAM boxes (adds a 2G swapfile). Critically
+it runs `npm install` inside a `systemd-run --scope` so the build escapes
+mgmt's own `MemoryMax=512M` cgroup (else SIGABRT/code 134). `_bridge_installed`
+checks the built `lib/index.js`, not just the package dir (npm creates the dir
+early, mid-build). `/connect` is gated on install; it spawns a pairing sidecar
+(`assets/whatsapp_pair.mjs`, copied into the bridge dir to reuse Baileys) that
+captures the raw QR string, rendered to PNG via `segno`. Enabling needs only env —
+`WHATSAPP_ENABLED=true` makes gateway/config.py create `PlatformConfig(enabled=True)`,
+no config.yaml edit. See `routes/whatsapp.py`.
 
 Response envelope: `ApiResponse(ok: bool, data: Any | None, error: str | None)`.
 
