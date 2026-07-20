@@ -246,6 +246,33 @@ apt_retry apt-get -qqy -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--f
   libssl-dev libffi-dev python3-venv python3-pip ffmpeg \
   debian-keyring debian-archive-keyring apt-transport-https
 
+# ---- 5b. Prefer IPv4 when IPv6 egress is broken ---------------------------
+# Some VPS providers assign a global IPv6 address + default route but don't
+# actually route IPv6 to the internet. glibc then prefers IPv6 (RFC 3484), so
+# Python/httpx stalls ~30s per request (it has no happy-eyeballs fallback like
+# curl) — e.g. the Codex device-code login times out before the dashboard can
+# read the URL ("Không đọc được URL device-code từ hermes"). If a global IPv6
+# address exists but egress is dead, tell getaddrinfo to prefer IPv4 system-wide
+# (harmless no-op on hosts with working IPv6 or none at all).
+step "5b. Network: prefer IPv4 if IPv6 egress broken"
+GAI_PREF="precedence ::ffff:0:0/96  100"
+# Match only an ACTIVE precedence line. Ubuntu ships /etc/gai.conf with the very
+# same rule as a COMMENTED example ("#precedence ::ffff:0:0/96  100"), so a plain
+# substring grep -qF always matched it and this whole step silently no-op'd.
+if grep -qE '^[[:space:]]*precedence[[:space:]]+::ffff:0:0/96' /etc/gai.conf 2>/dev/null; then
+  log "gai.conf already prefers IPv4 — skipping"
+elif ! ip -6 addr show scope global 2>/dev/null | grep -q 'inet6'; then
+  log "No global IPv6 address — nothing to do"
+elif curl -6 -sS -m 6 -o /dev/null https://cloudflare.com 2>/dev/null \
+   || curl -6 -sS -m 6 -o /dev/null https://www.google.com 2>/dev/null; then
+  log "IPv6 egress OK — leaving DNS preference unchanged"
+else
+  log "IPv6 present but egress broken — forcing IPv4 preference in /etc/gai.conf"
+  cp -n /etc/gai.conf "/etc/gai.conf.bak.$(date +%F)" 2>/dev/null || true
+  printf '\n# Prefer IPv4 over IPv6 (broken IPv6 egress) — added by hermes install.sh %s\n%s\n' \
+    "$(date +%F)" "$GAI_PREF" >> /etc/gai.conf
+fi
+
 # ---- 6. Install uv + Python 3.11 ------------------------------------------
 step "6. Install uv + Python 3.11"
 if ! command -v uv &>/dev/null; then
