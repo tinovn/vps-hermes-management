@@ -44,8 +44,9 @@ _PROVIDER_TEST_PATHS: dict[str, str] = {
 }
 
 # Codex (ChatGPT OAuth) only accepts models from its own backend catalog.
-# Dead slugs (gpt-5.2-codex, gpt-5.1-codex-max, gpt-5.1-codex-mini) return
-# HTTP 400 "model not supported when using Codex with a ChatGPT account".
+# Dead slugs (gpt-5.2-codex, gpt-5.1-codex-max, gpt-5.1-codex-mini,
+# gpt-5.3-codex-spark) return HTTP 400 "model not supported when using Codex
+# with a ChatGPT account".
 # An EMPTY model.default is also fatal: the gateway chat path falls back to
 # the provider catalog, but the cron scheduler reads config.yaml
 # model.default directly and crashes with "Codex Responses request 'model'
@@ -54,10 +55,21 @@ _PROVIDER_TEST_PATHS: dict[str, str] = {
 CODEX_DEFAULT_MODEL = "gpt-5.5"
 CODEX_SUPPORTED_MODELS = {
     "gpt-5.5",
+    "gpt-5.6-sol",
+    "gpt-5.6-sol-pro",
+    "gpt-5.6-terra",
+    "gpt-5.6-terra-pro",
+    "gpt-5.6-luna",
+    "gpt-5.6-luna-pro",
+    "gpt-5.5-pro",
     "gpt-5.4",
     "gpt-5.4-mini",
+    "gpt-5.4-nano",
+    "gpt-5-mini",
     "gpt-5.3-codex",
-    "gpt-5.3-codex-spark",
+    "gpt-4.1",
+    "gpt-4o",
+    "gpt-4o-mini",
 }
 
 _SENSITIVE_PATTERN = re.compile(r"(?i)(api_key|token|secret|password)")
