@@ -5,6 +5,7 @@
   "base_url": "https://api.z.ai",
   "test_endpoint": "/v1/models",
   "models": [
+    "zai/glm-5.2",
     "zai/glm-5.1",
     "zai/glm-5",
     "zai/glm-5v-turbo",
@@ -13,5 +14,5 @@
     "zai/glm-4.5",
     "zai/glm-4.5-flash"
   ],
-  "default_model": "zai/glm-5.1"
+  "default_model": "zai/glm-5.2"
 }
