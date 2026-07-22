@@ -6,14 +6,14 @@
   "test_endpoint": "/models",
   "models": [
     "huggingface/moonshotai/Kimi-K2.5",
-    "huggingface/moonshotai/Kimi-K2.6",
-    "huggingface/moonshotai/Kimi-K2-Thinking",
     "huggingface/Qwen/Qwen3.5-397B-A17B",
     "huggingface/Qwen/Qwen3.5-35B-A3B",
     "huggingface/deepseek-ai/DeepSeek-V3.2",
     "huggingface/MiniMaxAI/MiniMax-M2.5",
     "huggingface/zai-org/GLM-5",
-    "huggingface/XiaomiMiMo/MiMo-V2-Flash"
+    "huggingface/XiaomiMiMo/MiMo-V2-Flash",
+    "huggingface/moonshotai/Kimi-K2-Thinking",
+    "huggingface/moonshotai/Kimi-K2.6"
   ],
   "default_model": "huggingface/moonshotai/Kimi-K2.5"
 }
