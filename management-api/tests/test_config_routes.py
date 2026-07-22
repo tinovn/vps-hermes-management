@@ -24,6 +24,7 @@ class TestResolveCodexModel:
     def test_dead_slug_falls_back_to_default(self) -> None:
         assert resolve_codex_model("gpt-5.1-codex-max") == CODEX_DEFAULT_MODEL
         assert resolve_codex_model("gpt-5.2-codex") == CODEX_DEFAULT_MODEL
+        assert resolve_codex_model("gpt-5.3-codex-spark") == CODEX_DEFAULT_MODEL
 
     def test_supported_slug_kept(self) -> None:
         for slug in CODEX_SUPPORTED_MODELS:
