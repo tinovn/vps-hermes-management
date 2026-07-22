@@ -158,6 +158,35 @@ async def _do_upgrade_mgmt(settings: Settings) -> None:
         mgmt_path = Path(_MGMT_DIR)
         git_dir = mgmt_path / ".git"
 
+        async def _fetch(rel_repo_path: str, dest: Path) -> bool:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            proc = await asyncio.create_subprocess_exec(
+                "curl", "-fsSL", f"{_MGMT_REPO_RAW}/{rel_repo_path}", "-o", str(dest),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            _, err = await proc.communicate()
+            if proc.returncode != 0:
+                logger.error("mgmt fetch failed: %s — %s", rel_repo_path, err.decode(errors="replace"))
+                return False
+            return True
+
+        async def _gh_list(repo_subdir: str) -> list[str]:
+            """List file names in a repo subdir via the GitHub contents API."""
+            api = f"{_GH_API}/contents/{repo_subdir}?ref={_GH_REF}"
+            proc = await asyncio.create_subprocess_exec(
+                "curl", "-fsSL", "-H", "Accept: application/vnd.github+json", api,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            out, _ = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning("GitHub list failed for %s", repo_subdir)
+                return []
+            try:
+                items = json.loads(out.decode(errors="replace"))
+                return [it["name"] for it in items if it.get("type") == "file"]
+            except (json.JSONDecodeError, TypeError, KeyError):
+                return []
+
         if git_dir.exists():
             logger.info("mgmt upgrade: git pull in %s", _MGMT_DIR)
             proc = await asyncio.create_subprocess_exec(
@@ -178,39 +207,12 @@ async def _do_upgrade_mgmt(settings: Settings) -> None:
             # Base files (pyproject, package modules) still come from the small
             # static set; everything under routes/, config/rules, config/roles
             # is discovered live.
-            async def _fetch(rel_repo_path: str, dest: Path) -> bool:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                proc = await asyncio.create_subprocess_exec(
-                    "curl", "-fsSL", f"{_MGMT_REPO_RAW}/{rel_repo_path}", "-o", str(dest),
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                )
-                _, err = await proc.communicate()
-                if proc.returncode != 0:
-                    logger.error("mgmt fetch failed: %s — %s", rel_repo_path, err.decode(errors="replace"))
-                    return False
-                return True
 
             # 1. Static base files (package core + pyproject).
             for rel in _MGMT_FILES:
                 await _fetch(f"management-api/{rel}", mgmt_path / rel)
 
             # 2. Dynamic dirs via GitHub contents API (no jq; parse names).
-            async def _gh_list(repo_subdir: str) -> list[str]:
-                api = f"{_GH_API}/contents/{repo_subdir}?ref={_GH_REF}"
-                proc = await asyncio.create_subprocess_exec(
-                    "curl", "-fsSL", "-H", "Accept: application/vnd.github+json", api,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                )
-                out, _ = await proc.communicate()
-                if proc.returncode != 0:
-                    logger.warning("GitHub list failed for %s", repo_subdir)
-                    return []
-                try:
-                    items = json.loads(out.decode(errors="replace"))
-                    return [it["name"] for it in items if it.get("type") == "file"]
-                except (json.JSONDecodeError, TypeError, KeyError):
-                    return []
-
             for subdir in ("management-api/hermes_mgmt/routes", "config/rules", "config/roles"):
                 names = await _gh_list(subdir)
                 # Where these files land locally: routes go under mgmt pkg,
@@ -223,6 +225,24 @@ async def _do_upgrade_mgmt(settings: Settings) -> None:
                     await _fetch(f"{subdir}/{name}", local_base / name)
                 if names:
                     logger.info("mgmt upgrade: refreshed %s (%d files)", subdir, len(names))
+
+        # 3. Refresh provider + channel config templates. These live in
+        #    ${HERMES_TEMPLATES_DIR} (/etc/hermes/config), OUTSIDE the mgmt git
+        #    repo — so neither `git pull` nor the package file list above touches
+        #    them, and updated model catalogs never reached upgraded boxes.
+        #    Dynamic listing → newly added providers/channels are always pulled.
+        #    Runs for BOTH the git and raw install layouts.
+        templates_dir = Path(settings.templates_dir)
+        _tpl_n = 0
+        for name in await _gh_list("config"):
+            if name.endswith(".json"):
+                if await _fetch(f"config/{name}", templates_dir / name):
+                    _tpl_n += 1
+        for name in await _gh_list("config/channels"):
+            if name.endswith(".json"):
+                if await _fetch(f"config/channels/{name}", templates_dir / "channels" / name):
+                    _tpl_n += 1
+        logger.info("mgmt upgrade: refreshed %d provider/channel templates in %s", _tpl_n, templates_dir)
 
         uv_bin = _MGMT_VENV_UV
         if not Path(uv_bin).exists():
