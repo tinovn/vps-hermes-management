@@ -720,7 +720,8 @@ step "13. Seed provider/channel templates"
 for tpl in anthropic openai google xai \
            deepseek groq mistral together \
            nous-portal openrouter huggingface \
-           kimi mimo minimax zai; do
+           kimi mimo minimax zai \
+           openai-codex; do
   curl -fsSL "${MGMT_REPO_RAW}/config/${tpl}.json" \
     -o "${TEMPLATES_DIR}/${tpl}.json" 2>/dev/null \
     || log "WARN: template ${tpl}.json not fetched (may not exist yet)"
