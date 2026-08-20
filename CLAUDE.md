@@ -125,6 +125,7 @@ hermes_mgmt/
     ├── env_routes.py    /api/env, /api/env/{key} (PUT/DELETE)
     ├── cli_routes.py    POST /api/cli — run whitelisted subcommand
     ├── zalo.py          /api/zalo/{status,connect,qr,disconnect} — proxy to Zalo Node sidecar (127.0.0.1:3838)
+    ├── maintenance.py   /api/zalo/maintenance (GET/POST) — bảo trì toggle, shared state file with the bot plugin
     └── whatsapp.py      /api/whatsapp/{status,install,install-status,connect,qr,enable,disconnect,logs} — Baileys install + QR pairing + enable
 ```
 
