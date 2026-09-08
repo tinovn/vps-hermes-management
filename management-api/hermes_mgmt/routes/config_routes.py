@@ -44,16 +44,16 @@ _PROVIDER_TEST_PATHS: dict[str, str] = {
 }
 
 # Codex (ChatGPT OAuth) only accepts models from its own backend catalog.
-# Dead slugs (gpt-5.2-codex, gpt-5.1-codex-max, gpt-5.1-codex-mini) return
-# HTTP 400 "model not supported when using Codex with a ChatGPT account".
+# Dead slugs (gpt-5.5, gpt-5.2-codex, gpt-5.1-codex-max, gpt-5.1-codex-mini)
+# return HTTP 400 "model not supported when using Codex with a ChatGPT
+# account" — gpt-5.5 was pulled from the Codex backend catalog.
 # An EMPTY model.default is also fatal: the gateway chat path falls back to
 # the provider catalog, but the cron scheduler reads config.yaml
 # model.default directly and crashes with "Codex Responses request 'model'
 # must be a non-empty string" — so we always pin a known-good default.
 # Keep aligned with upstream hermes_cli/codex_models.py DEFAULT_CODEX_MODELS.
-CODEX_DEFAULT_MODEL = "gpt-5.5"
+CODEX_DEFAULT_MODEL = "gpt-5.6-luna"
 CODEX_SUPPORTED_MODELS = {
-    "gpt-5.5",
     "gpt-5.6-sol",
     "gpt-5.6-sol-pro",
     "gpt-5.6-terra",
