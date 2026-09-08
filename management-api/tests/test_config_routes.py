@@ -13,8 +13,8 @@ class TestResolveCodexModel:
 
     Empty → cron jobs crash ("'model' must be a non-empty string": the cron
     scheduler reads config.yaml model.default with no catalog fallback).
-    Dead slugs (gpt-5.1-codex-max, gpt-5.2-codex...) → HTTP 400 from the
-    ChatGPT Codex backend.
+    Dead slugs (gpt-5.5, gpt-5.1-codex-max, gpt-5.2-codex...) → HTTP 400 from
+    the ChatGPT Codex backend.
     """
 
     def test_empty_falls_back_to_default(self) -> None:
@@ -25,6 +25,7 @@ class TestResolveCodexModel:
         assert resolve_codex_model("gpt-5.1-codex-max") == CODEX_DEFAULT_MODEL
         assert resolve_codex_model("gpt-5.2-codex") == CODEX_DEFAULT_MODEL
         assert resolve_codex_model("gpt-5.1-codex-mini") == CODEX_DEFAULT_MODEL
+        assert resolve_codex_model("gpt-5.5") == CODEX_DEFAULT_MODEL
 
     def test_supported_slug_kept(self) -> None:
         for slug in CODEX_SUPPORTED_MODELS:

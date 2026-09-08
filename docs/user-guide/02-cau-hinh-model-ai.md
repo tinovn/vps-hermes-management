@@ -75,7 +75,7 @@ Dành cho khách đã có tài khoản **ChatGPT Plus/Pro/Team**: bot dùng tr�
 
 ### Lưu ý quan trọng với Codex
 
-- **Chỉ dùng được model trong catalog Codex** (`gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`). Hệ thống tự ghim model mặc định **`gpt-5.5`** khi kết nối; nếu chọn model ngoài danh sách sẽ tự chuyển về `gpt-5.5` (các model cũ như `gpt-5.1-codex-max` bị backend ChatGPT từ chối HTTP 400). Model mặc định bắt buộc phải có — nếu để trống, **cron job sẽ lỗi** `'model' must be a non-empty string`.
+- **Chỉ dùng được model trong catalog Codex** (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`). Hệ thống tự ghim model mặc định **`gpt-5.6-luna`** khi kết nối; nếu chọn model ngoài danh sách sẽ tự chuyển về `gpt-5.6-luna` (các model cũ như `gpt-5.5`, `gpt-5.1-codex-max` bị backend ChatGPT từ chối HTTP 400). Model mặc định bắt buộc phải có — nếu để trống, **cron job sẽ lỗi** `'model' must be a non-empty string`.
 - Khi đang đăng nhập Codex, hệ thống **ưu tiên Codex hơn mọi provider khác**. Muốn đổi sang provider API key, **bắt buộc bấm "Ngắt kết nối ChatGPT"** (`POST /api/codex/auth/disable`) trước, rồi mới chọn provider mới.
 - Token lưu trong `~/.hermes/auth.json` trên VPS; API không bao giờ trả token ra ngoài.
 
