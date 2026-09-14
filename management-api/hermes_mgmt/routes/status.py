@@ -48,8 +48,12 @@ def _resolve_public_ip(fallback: str) -> str:
 
 @router.get("/api/info", response_model=ApiResponse)
 async def get_info(settings: Annotated[Settings, Depends(get_settings_dep)]) -> ApiResponse:
-    version_result = await run_hermes("version", [])
-    hermes_ver = version_result.stdout.strip() or "unknown"
+    version_result = await run_hermes("--version", [])
+    hermes_ver = (
+        version_result.stdout.strip().splitlines()[0]
+        if version_result.stdout.strip()
+        else "unknown"
+    )
     public_ip = _resolve_public_ip(settings.droplet_ip)
     # When HERMES_AUTH_TOKEN is set, dashboard_url is the one-click link Caddy
     # consumes (`?token=…` -> sets 30-day cookie -> redirects to /). Otherwise

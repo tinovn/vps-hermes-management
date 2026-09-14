@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 HERMES_WHITELIST: frozenset[str] = frozenset(
     {
         "version",
+        # Not a real subcommand — current Hermes CLI dropped `hermes version`
+        # in favor of the `--version` flag. Whitelisted here because
+        # run_hermes() builds argv generically as [HERMES_BIN, subcommand, *args].
+        "--version",
         "status",
         "doctor",
         "config",
