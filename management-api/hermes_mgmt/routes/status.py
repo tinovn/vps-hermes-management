@@ -138,16 +138,23 @@ async def set_domain(
     settings: Annotated[Settings, Depends(get_settings_dep)],
 ) -> ApiResponse:
     set_env(settings.env_file, "DOMAIN", body.domain)
-    # Settings is lru_cache'd at startup; without invalidation, GET /api/info
-    # and other endpoints would keep returning the old domain until the
-    # service restarts.
+    # systemd injects DOMAIN into our process env via
+    # EnvironmentFile=/opt/hermes/.env, frozen at service start. pydantic-settings
+    # ranks os.environ ABOVE env_file, so rewriting the file is not enough: a
+    # rebuilt Settings would still read the stale value and GET /api/info would
+    # keep handing out a dashboard_url on the old domain. Update the live env
+    # first, then drop the lru_cache.
+    os.environ["DOMAIN"] = body.domain
     get_settings.cache_clear()
 
-    async def restart_caddy() -> None:
-        try:
-            await restart("caddy", settings.allowed_services)
-        except Exception as exc:
-            logger.error("Failed to restart caddy: %s", exc)
+    async def restart_web_services() -> None:
+        # caddy terminates TLS for the domain; gateway and dashboard carry the
+        # same stale DOMAIN in their process env and need the same refresh.
+        for service in ("caddy", "hermes-gateway", "hermes-dashboard"):
+            try:
+                await restart(service, settings.allowed_services)
+            except Exception as exc:
+                logger.error("Failed to restart %s: %s", service, exc)
 
-    background_tasks.add_task(restart_caddy)
+    background_tasks.add_task(restart_web_services)
     return ApiResponse(ok=True, data={"domain": body.domain})
