@@ -9,7 +9,14 @@ dependencies = [
     "fastembed>=0.4,<1.0",
     "numpy>=1.26",
     "pypdf>=4.0",
-    "mcp>=1.9",
+    # Ghim <2: mcp 2.0 bỏ mcp.server.fastmcp (FastMCP tách thành package
+    # riêng), nên bản >=2 làm hermes-rag chết ngay lúc khởi động với
+    # ModuleNotFoundError: No module named 'mcp.server.fastmcp'.
+    # Không nâng lên fastmcp 3.x nếu chưa sửa store.py: FastMCP 3 chạy
+    # tool ở thread khác và kết nối SQLite hiện tại không dùng chung
+    # thread được ("SQLite objects created in a thread can only be used
+    # in that same thread").
+    "mcp>=1.9,<2",
 ]
 
 [project.optional-dependencies]
