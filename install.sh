@@ -246,6 +246,10 @@ fi
 # ---- 5. System packages ---------------------------------------------------
 step "5. Install system packages"
 export DEBIAN_FRONTEND=noninteractive
+# Caddy's cloudsmith apt repo now answers 402 Payment Required, which makes
+# EVERY `apt-get update` fail. Drop it on boxes installed before the switch
+# to GitHub-release .debs (step 7) — otherwise this very update dies.
+rm -f /etc/apt/sources.list.d/caddy-stable.list /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 apt_retry apt-get -qqy update
 apt_retry apt-get -qqy -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install \
   curl ca-certificates gnupg ufw fail2ban jq dnsutils git build-essential \
@@ -299,13 +303,25 @@ log "Node: $(node -v) / npm: $(npm -v)"
 
 # ---- 7. Install Caddy -----------------------------------------------------
 step "7. Install Caddy"
+# The official .deb from GitHub releases ships the same layout the old
+# cloudsmith package did (/usr/bin/caddy, caddy.service, caddy user), so the
+# systemd override in step 15 is unchanged. Falls back to a pinned version if
+# the GitHub API is rate-limited, then to Ubuntu's own (older) universe pkg.
+readonly CADDY_FALLBACK_VERSION="2.11.7"
 if ! command -v caddy &>/dev/null; then
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-    | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-    > /etc/apt/sources.list.d/caddy-stable.list
-  apt_retry apt-get -qqy update
-  apt_retry apt-get -qqy install caddy
+  CADDY_ARCH="$(dpkg --print-architecture)"
+  CADDY_VERSION="$(curl -fsSL https://api.github.com/repos/caddyserver/caddy/releases/latest 2>/dev/null \
+    | grep -oE '"tag_name": *"v[^"]+"' | grep -oE '[0-9][^"]*' || true)"
+  CADDY_VERSION="${CADDY_VERSION:-$CADDY_FALLBACK_VERSION}"
+  CADDY_DEB="/tmp/caddy_${CADDY_VERSION}_linux_${CADDY_ARCH}.deb"
+  if curl -fsSL -o "$CADDY_DEB" \
+      "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_${CADDY_ARCH}.deb"; then
+    apt_retry apt-get -qqy install "$CADDY_DEB"
+    rm -f "$CADDY_DEB"
+  else
+    log "WARN: Caddy .deb download failed — falling back to Ubuntu's caddy package"
+    apt_retry apt-get -qqy install caddy
+  fi
 fi
 log "Caddy: $(caddy version | head -1)"
 
