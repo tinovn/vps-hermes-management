@@ -19,9 +19,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["control"], dependencies=[Depends(require_auth)])
 
 _HERMES_TARGET = "hermes-gateway"
-_VENV_UV = "/opt/hermes/hermes-agent/.venv/bin/uv"
-_HERMES_AGENT_DIR = "/opt/hermes/hermes-agent"
-_HERMES_EXTRAS = "[web,messaging,cron,voice,mcp,honcho]"
+_HERMES_BIN = "/usr/local/bin/hermes"
 
 _MGMT_DIR = "/opt/hermes-mgmt"
 _MGMT_VENV_UV = "/opt/hermes-mgmt/.venv/bin/uv"
@@ -103,26 +101,32 @@ async def rebuild_hermes(
 
 
 async def _do_upgrade(settings: Settings) -> None:
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "git", "-C", _HERMES_AGENT_DIR, "pull",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout_b, stderr_b = await proc.communicate()
-        logger.info("git pull: %s %s", stdout_b.decode(errors="replace"), stderr_b.decode(errors="replace"))
+    """Run upstream's own updater, then restart our units.
 
-        uv_bin = _VENV_UV
-        if not Path(uv_bin).exists():
-            uv_bin = shutil.which("uv") or "uv"
-        proc2 = await asyncio.create_subprocess_exec(
-            uv_bin, "pip", "install", "-e", f".{_HERMES_EXTRAS}",
-            cwd=_HERMES_AGENT_DIR,
+    Hermes is pm-managed now (Python 3.14 + Node under /root/.hermes), so a
+    bare ``git pull && uv pip install -e .`` no longer works — ``hermes update``
+    pulls, re-syncs deps (keeping recorded extras) and rebuilds web_dist/TUI.
+    The rebuild peaks well above mgmt's MemoryMax=512M, so run it in its own
+    transient scope. We restart the services ourselves (our units, not the
+    CLI's systemd-user one), hence --no-gateway-restart.
+    """
+    try:
+        cmd = [_HERMES_BIN, "update", "--yes", "--no-gateway-restart"]
+        if shutil.which("systemd-run"):
+            cmd = ["systemd-run", "--scope", "--quiet",
+                   "-p", "MemoryMax=infinity", "-p", "MemorySwapMax=infinity", *cmd]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd="/root",
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
         )
-        stdout_b2, stderr_b2 = await proc2.communicate()
-        logger.info("uv install: %s %s", stdout_b2.decode(errors="replace"), stderr_b2.decode(errors="replace"))
+        out_b, _ = await proc.communicate()
+        logger.info("hermes update (rc=%s): %s", proc.returncode, out_b.decode(errors="replace"))
+        if proc.returncode != 0:
+            logger.error("hermes update failed (rc=%s) — not restarting services", proc.returncode)
+            return
 
         allowed = settings.allowed_services
         for svc in ("hermes-gateway", "hermes-dashboard"):

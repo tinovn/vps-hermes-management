@@ -9,7 +9,7 @@ dependencies = [
     "fastembed>=0.4,<1.0",
     "numpy>=1.26",
     "pypdf>=4.0",
-    "mcp>=1.9",
+    "mcp>=1.9,<2",  # mcp 2.x renamed FastMCP → MCPServer (mcp.server.fastmcp is gone)
 ]
 
 [project.optional-dependencies]

@@ -263,7 +263,7 @@ curl -s -H "Authorization: Bearer $MGMT_KEY" http://<VPS-IP>:9997/api/system
 | POST | `/api/stop` | — | Stop all Hermes services |
 | POST | `/api/start` | — | Start all Hermes services |
 | POST | `/api/rebuild` | — | `cd web && npm install && npm run build`, then restart dashboard |
-| POST | `/api/upgrade` | — | `git pull` Hermes Agent + `uv pip install -e '.[…]'` + restart gateway/dashboard. Returns 202 Accepted; runs in background |
+| POST | `/api/upgrade` | — | `hermes update --yes --no-gateway-restart` (git pull + pm dep sync + web rebuild) + restart gateway/dashboard. Returns 202 Accepted; runs in background |
 | POST | `/api/upgrade-mgmt` | — | **Self-update**: re-pulls all `/opt/hermes-mgmt/` sources from raw GitHub (or `git pull` if checked out), reinstalls via `uv pip install -e .`, restarts `hermes-mgmt.service`. Returns 202 before uvicorn restarts |
 | POST | `/api/reset` | `{"confirm":"RESET"}` | Wipe config + sessions (requires explicit confirm string) |
 | PUT | `/api/domain` | `{domain}` | Change `DOMAIN` in `.env`, re-renders Caddyfile, restarts Caddy |
@@ -630,7 +630,7 @@ systemctl restart caddy
 cd /opt/hermes/hermes-agent
 git log -n 5 --oneline
 git checkout <previous-sha>
-/opt/hermes/hermes-agent/.venv/bin/uv pip install -e '.[web,messaging,cron,voice,mcp,honcho]'
+hermes pm install          # re-sync pm-managed deps for that commit (keeps recorded extras)
 systemctl restart hermes-gateway hermes-dashboard
 ```
 
