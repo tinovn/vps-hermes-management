@@ -57,7 +57,7 @@ All 3 services are grouped under `hermes.target` for atomic start/stop.
 | `/opt/hermes/`                                      | Install root (`hermes-agent/` source + helper files)                                                                                                                                                                                                                |
 | `/opt/hermes/.env`                                  | Service config — auth tokens, ports, domain. Loaded by systemd `EnvironmentFile=` for all 3 units                                                                                                                                                                   |
 | `/root/.hermes/`                                    | `HERMES_HOME` — Hermes's own store: `config.yaml`, `.env` (provider keys), sessions, skills, logs. Services run as `User=root` with default `HOME=/root`, so the CLI default `~/.hermes` resolves here too — keeps CLI / Web Dashboard / mgmt-api on the same store |
-| `/opt/hermes/hermes-agent/`                         | Upstream Hermes git clone (editable uv venv)                                                                                                                                                                                                                        |
+| `/opt/hermes/hermes-agent/`                         | Upstream Hermes git clone, installed by upstream `scripts/install.sh` (pm-managed: Python 3.14 + Node + deps live under `/root/.hermes/{tools,installs}`; launcher `hermes-agent/.hermes/bin/hermes`, symlinked to `/usr/local/bin/hermes`). No in-tree `.venv`                                                       |
 | `/opt/hermes/Caddyfile`                             | Caddy config (uses `$DOMAIN` + `$CADDY_TLS` from .env)                                                                                                                                                                                                              |
 | `/opt/hermes-mgmt/`                                 | Management API Python package + uv venv                                                                                                                                                                                                                             |
 | `/opt/hermes-rag/`                                  | RAG MCP service (opt-in): `hermes_rag/` package + uv venv, `data/rag.db`, `docs/` (ingest source), `models/` (fastembed cache)                                                                                                                                      |
@@ -78,6 +78,7 @@ All 3 services are grouped under `hermes.target` for atomic start/stop.
 6. **Management API auth:** `Authorization: Bearer <HERMES_MGMT_API_KEY>` or session cookie from `POST /api/auth/login`. Constant-time compare via `hmac.compare_digest`.
 7. **CLI whitelist** for `POST /api/cli`: `version, status, doctor, config, model, cron, gateway, logs, skills, sessions, memory, tools, insights, auth` (see `hermes_mgmt.cli_runner.HERMES_WHITELIST`).
 8. **Domain auto-detect** in install.sh: `hostname -f` if FQDN → that; else `<IP>.sslip.io`; override with `--domain` flag.
+9. **Hermes is pm-managed** (upstream's own package manager). install.sh delegates to upstream `scripts/install.sh --non-interactive` — do NOT hand-roll `uv venv` / `uv pip install -e .[extras]` / `npm` in `web/`: core deps are gated on Python 3.14, so a 3.11 venv ends up with no deps. Opt-in extras go through `hermes pm install --extra <name>`; upgrades through `hermes update`. Ad-hoc Python against Hermes config uses the mgmt venv (`/opt/hermes-mgmt/.venv/bin/python`, has pyyaml).
 
 ## Runtime commands
 
@@ -202,7 +203,7 @@ rag-mcp/hermes_rag/
 ```bash
 # Hermes (via API)
 curl -X POST -H "Authorization: Bearer $MGMT_KEY" http://localhost:9997/api/upgrade
-# Does: cd /opt/hermes/hermes-agent && git pull && uv pip install -e '.[extras]' && systemctl restart hermes-gateway hermes-dashboard
+# Does: hermes update --yes --no-gateway-restart (in a systemd-run scope) && systemctl restart hermes-gateway hermes-dashboard
 
 # Management API (re-run install with --skip-hermes)
 cd /opt/hermes-mgmt && git pull 2>/dev/null || true
@@ -218,7 +219,7 @@ Each systemd unit has `Restart=always` with exponential backoff. On a bad upgrad
 cd /opt/hermes/hermes-agent
 git reflog --oneline | head -10
 git reset --hard <previous-sha>
-/opt/hermes/hermes-agent/.venv/bin/uv pip install -e '.[web,messaging,cron,voice,mcp,honcho]'
+hermes pm install
 systemctl restart hermes.target
 ```
 

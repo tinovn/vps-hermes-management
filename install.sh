@@ -25,7 +25,6 @@ set -euo pipefail
 readonly APP_NAME="hermes-vps"
 readonly APP_VERSION="0.1.0"
 readonly MGMT_REPO_RAW="https://raw.githubusercontent.com/tinovn/vps-hermes-management/main"
-readonly HERMES_REPO_URL="https://github.com/NousResearch/hermes-agent.git"
 readonly INSTALL_DIR="/opt/hermes"
 readonly HERMES_SRC_DIR="${INSTALL_DIR}/hermes-agent"
 readonly MGMT_DIR="/opt/hermes-mgmt"
@@ -38,7 +37,14 @@ readonly RAG_PORT=9998
 # Light multilingual embedder (good for Vietnamese + English on a 4GB box).
 # Override per-install with the RAG_EMBED_MODEL env var in /opt/hermes/.env.
 readonly RAG_EMBED_MODEL_DEFAULT="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-readonly HERMES_EXTRAS="web,messaging,cron,voice,mcp,honcho"
+# Upstream now installs through its own package manager ("pm"): Python 3.14 +
+# Node + deps live under /root/.hermes/{tools,installs}, and the `hermes`
+# launcher is ${HERMES_SRC_DIR}/.hermes/bin/hermes. Core + web/mcp/cron come by
+# default; these opt-in extras are added on top (`hermes pm install --extra`).
+readonly HERMES_PM_EXTRAS="messaging voice"
+readonly HERMES_LAUNCHER="${HERMES_SRC_DIR}/.hermes/bin/hermes"
+readonly HERMES_INSTALLER_URL="https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh"
+# Python for OUR venvs only (mgmt-api, rag) — Hermes picks its own interpreter.
 readonly PYTHON_PIN="3.11"
 
 # Zalo personal plugin (unofficial Zalo Web API via zca-js Node sidecar).
@@ -244,7 +250,8 @@ apt_retry apt-get -qqy update
 apt_retry apt-get -qqy -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install \
   curl ca-certificates gnupg ufw fail2ban jq dnsutils git build-essential \
   libssl-dev libffi-dev python3-venv python3-pip ffmpeg \
-  debian-keyring debian-archive-keyring apt-transport-https
+  debian-keyring debian-archive-keyring apt-transport-https \
+  libatomic1 unzip xz-utils
 
 # ---- 5b. Prefer IPv4 when IPv6 egress is broken ---------------------------
 # Some VPS providers assign a global IPv6 address + default route but don't
@@ -282,7 +289,7 @@ fi
 uv --version
 uv python install "$PYTHON_PIN"
 
-# ---- 6b. Install Node.js 22 (required for Hermes web dashboard build) -----
+# ---- 6b. Install Node.js 22 (Zalo sidecar + WhatsApp bridge; Hermes ships its own) -
 step "6b. Install Node.js 22"
 if ! command -v node &>/dev/null || [[ "$(node -v 2>/dev/null)" != v22* ]]; then
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
@@ -330,55 +337,52 @@ fi
 # ---- 10. Install Hermes Agent (editable via uv) ---------------------------
 if [[ "$SKIP_HERMES" != "true" ]]; then
   step "10. Install Hermes Agent (ref=${HERMES_REF})"
-  if [[ ! -d "${HERMES_SRC_DIR}/.git" ]]; then
-    git clone "${HERMES_REPO_URL}" "${HERMES_SRC_DIR}"
+  # The upstream install ends with a Vite build of the web UI that peaks well
+  # over 1GB; on a 2GB box with the gateway/dashboard already running (re-run /
+  # upgrade) it gets OOM-killed (node exit 137 → "app products ... failed").
+  # Add a 2G swapfile on low-RAM boxes and stop our Hermes units for the
+  # duration — step 16 starts them again on the new code.
+  if ! swapon --show 2>/dev/null | grep -q . && [[ "${MEM_TOTAL_MB:-0}" -lt 3500 && ! -e /swapfile ]]; then
+    log "Low RAM (${MEM_TOTAL_MB}MB) and no swap — adding a 2G swapfile for the build"
+    if fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none; then
+      chmod 600 /swapfile && mkswap /swapfile >/dev/null && swapon /swapfile \
+        && { grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab; } \
+        || log "WARN: could not enable /swapfile — build may OOM"
+    fi
   fi
-  cd "${HERMES_SRC_DIR}"
-  git fetch --tags origin
-  git checkout "${HERMES_REF}"
-  git pull --ff-only origin "${HERMES_REF}" 2>/dev/null || true
+  systemctl stop hermes-gateway.service hermes-dashboard.service 2>/dev/null || true
 
-  if [[ ! -d "${HERMES_SRC_DIR}/.venv" ]]; then
-    uv venv --python "$PYTHON_PIN" "${HERMES_SRC_DIR}/.venv"
+  # Delegate to upstream's own installer. Since the "pm" migration Hermes
+  # requires Python 3.14 (every core dep is gated on python_version>='3.14', so
+  # the old `uv venv --python 3.11 && uv pip install -e .[extras]` produced a
+  # venv with NO deps), stages its own Node/Python/uv into /root/.hermes/tools,
+  # and builds web_dist + TUI itself. Hand-rolling that is what kept breaking.
+  # --non-interactive skips the setup wizard + `hermes gateway install` (we
+  # write our own systemd units below). Browser / computer-use tools pull
+  # Chromium etc. — not needed on a headless VPS.
+  HERMES_INSTALLER_ARGS=(--non-interactive --skip-browser --skip-computer-use
+                         --dir "${HERMES_SRC_DIR}" --hermes-home /root/.hermes)
+  if [[ "$HERMES_REF" =~ ^[0-9a-f]{7,40}$ ]]; then
+    HERMES_INSTALLER_ARGS+=(--commit "$HERMES_REF")
+  else
+    HERMES_INSTALLER_ARGS+=(--branch "$HERMES_REF")
   fi
-  # shellcheck source=/dev/null
-  VIRTUAL_ENV="${HERMES_SRC_DIR}/.venv" uv pip install --python "${HERMES_SRC_DIR}/.venv/bin/python" \
-    -e ".[${HERMES_EXTRAS}]"
+  # Pre-pm installs left an in-tree 3.11 .venv; pm never uses it.
+  rm -rf "${HERMES_SRC_DIR}/.venv"
+  curl -fsSL "${HERMES_INSTALLER_URL}" -o /tmp/hermes-upstream-install.sh \
+    || die "Failed to download upstream Hermes installer"
+  bash /tmp/hermes-upstream-install.sh "${HERMES_INSTALLER_ARGS[@]}" </dev/null \
+    || die "Upstream Hermes installer failed — see ${LOG_FILE} and /root/.hermes/logs/install.log"
+  [[ -x "${HERMES_LAUNCHER}" ]] || die "Hermes launcher missing at ${HERMES_LAUNCHER}"
+  ln -sf "${HERMES_LAUNCHER}" /usr/local/bin/hermes
 
-  ln -sf "${HERMES_SRC_DIR}/.venv/bin/hermes" /usr/local/bin/hermes
-  log "Hermes: $(/usr/local/bin/hermes version 2>/dev/null | head -1 || echo 'installed')"
-
-  # Build web dashboard ahead of time — Hermes auto-build during systemd start
-  # fails (no TTY, kills child npm processes after 7s).
-  if [[ -d "${HERMES_SRC_DIR}/web" && ! -d "${HERMES_SRC_DIR}/hermes_cli/web_dist" ]]; then
-    log "Building Hermes web dashboard (npm install + build)..."
-    pushd "${HERMES_SRC_DIR}/web" >/dev/null
-    npm install --no-audit --no-fund --loglevel=error
-    npm run build
-    popd >/dev/null
-    log "Web dashboard built"
-  fi
-
-  # Default config tweaks: clean cron delivery. Upstream wraps every scheduled
-  # job message with "Cronjob Response: ..." / "(job_id: ...)" / "To stop or
-  # manage this job..." boilerplate (cron/scheduler.py, wrap_response default
-  # true) — end users should only see the actual content. Idempotent merge.
-  log "Setting cron.wrap_response=false (clean cron messages)..."
-  mkdir -p /root/.hermes
-  HERMES_HOME=/root/.hermes "${HERMES_SRC_DIR}/.venv/bin/python" - <<'PYEOF' >>"${LOG_FILE}" 2>&1 || log "WARN: could not set cron.wrap_response=false — set it in config.yaml manually"
-import os, yaml
-p = os.path.join(os.environ["HERMES_HOME"], "config.yaml")
-d = {}
-if os.path.exists(p):
-    d = yaml.safe_load(open(p)) or {}
-c = d.get("cron")
-if not isinstance(c, dict):
-    c = {}
-c["wrap_response"] = False
-d["cron"] = c
-yaml.safe_dump(d, open(p, "w"), allow_unicode=True, sort_keys=False)
-print("cron.wrap_response=false")
-PYEOF
+  # Opt-in extras (telegram/discord/slack, voice transcription). PM records
+  # them, so later `hermes update` runs keep them.
+  PM_EXTRA_ARGS=()
+  for e in $HERMES_PM_EXTRAS; do PM_EXTRA_ARGS+=(--extra "$e"); done
+  (cd "${HERMES_SRC_DIR}" && /usr/local/bin/hermes pm install "${PM_EXTRA_ARGS[@]}") \
+    || log "WARN: 'hermes pm install ${PM_EXTRA_ARGS[*]}' failed — Hermes lazy-installs them on first use"
+  log "Hermes: $(/usr/local/bin/hermes --version 2>/dev/null | head -1 || echo 'installed')"
 else
   log "Skipping Hermes install (--skip-hermes)"
 fi
@@ -443,6 +447,31 @@ fi
 VIRTUAL_ENV="${MGMT_DIR}/.venv" uv pip install --python "${MGMT_DIR}/.venv/bin/python" \
   -e "${MGMT_DIR}"
 
+# Default config tweaks: clean cron delivery. Upstream wraps every scheduled
+# job message with "Cronjob Response: ..." / "(job_id: ...)" / "To stop or
+# manage this job..." boilerplate (cron/scheduler.py, wrap_response default
+# true) — end users should only see the actual content. Idempotent merge.
+# Runs on the mgmt venv's python (has pyyaml): Hermes no longer has an in-tree
+# venv to borrow, and its pm-managed interpreter isn't meant for ad-hoc scripts.
+if [[ "$SKIP_HERMES" != "true" ]]; then
+  log "Setting cron.wrap_response=false (clean cron messages)..."
+  mkdir -p /root/.hermes
+  HERMES_HOME=/root/.hermes "${MGMT_DIR}/.venv/bin/python" - <<'PYEOF' >>"${LOG_FILE}" 2>&1 || log "WARN: could not set cron.wrap_response=false — set it in config.yaml manually"
+import os, yaml
+p = os.path.join(os.environ["HERMES_HOME"], "config.yaml")
+d = {}
+if os.path.exists(p):
+    d = yaml.safe_load(open(p)) or {}
+c = d.get("cron")
+if not isinstance(c, dict):
+    c = {}
+c["wrap_response"] = False
+d["cron"] = c
+yaml.safe_dump(d, open(p, "w"), allow_unicode=True, sort_keys=False)
+print("cron.wrap_response=false")
+PYEOF
+fi
+
 # ---- 11b. Install Zalo personal plugin -----------------------------------
 # Hermes discovers plugins from ${HERMES_HOME}/plugins/<name>/. Our gateway
 # service runs as User=root with HOME unset, so HERMES_HOME resolves to
@@ -486,7 +515,7 @@ if [[ "$WITH_ZALO" == "true" && "$SKIP_HERMES" != "true" ]]; then
     # sidecar) when its config.yaml platforms.<id>.enabled is true — otherwise it
     # logs "No messaging platforms enabled". Platform id = the id the adapter
     # passes to ctx.register_platform() (zalo-personal), NOT the plugin key.
-    HERMES_HOME=/root/.hermes /opt/hermes/hermes-agent/.venv/bin/python - <<'PYEOF' >>"${LOG_FILE}" 2>&1 || log "WARN: could not flip platforms.zalo-personal.enabled — set it from the dashboard"
+    HERMES_HOME=/root/.hermes "${MGMT_DIR}/.venv/bin/python" - <<'PYEOF' >>"${LOG_FILE}" 2>&1 || log "WARN: could not flip platforms.zalo-personal.enabled — set it from the dashboard"
 import os, yaml
 p = os.path.join(os.environ["HERMES_HOME"], "config.yaml")
 d = yaml.safe_load(open(p)) or {}

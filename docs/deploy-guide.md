@@ -26,7 +26,7 @@ Flow (~6-8 min on 1 vCPU / 2 GB):
 7. Install Caddy from cloudsmith
 8. Configure UFW (allow 22 limit, 80, 443, 9997)
 9. Create `/opt/hermes/` + `/opt/hermes-mgmt/` + `/etc/hermes/config/`
-10. Git clone Hermes → `uv venv` → `uv pip install -e '.[web,messaging,cron,voice,mcp,honcho]'`
+10. Upstream `scripts/install.sh --non-interactive` (clone + pm: Python 3.14, Node, deps, web build) → `hermes pm install --extra messaging --extra voice`
 11. Download + install `management-api` via `uv pip install -e`
 12. Generate tokens → write `.env`
 13. Seed provider + channel config templates
@@ -139,10 +139,8 @@ open $VPS/
 # Via API (recommended)
 curl -X POST -H "Authorization: Bearer $MGMT_KEY" $VPS/api/upgrade
 
-# Or manually
-cd /opt/hermes/hermes-agent
-git pull
-/opt/hermes/hermes-agent/.venv/bin/uv pip install --python /opt/hermes/hermes-agent/.venv/bin/python -e '.[web,messaging,cron,voice,mcp,honcho]'
+# Or manually (upstream updater: git pull + pm dep sync + web/TUI rebuild)
+cd /root && hermes update --yes --no-gateway-restart
 systemctl restart hermes-gateway hermes-dashboard
 ```
 
@@ -181,7 +179,7 @@ journalctl -u hermes-mgmt --no-pager -n 50
 Common causes:
 - No provider configured → run `hermes model` and `hermes config show`
 - No API key in `.env` → `curl -X PUT ... /api/config/api-key` or edit `.env` directly
-- Python venv corrupt → `rm -rf /opt/hermes/hermes-agent/.venv && bash /opt/hermes/hermes-install.sh --skip-hermes` (regenerates)
+- Hermes deps broken → `cd /opt/hermes/hermes-agent && hermes pm repair` (or `hermes pm doctor` to inspect)
 
 ### SSL certificate fails
 ```bash
@@ -207,6 +205,6 @@ systemctl restart hermes-mgmt
 ### Change Hermes extras (add `slack`, `matrix`, etc.)
 ```bash
 cd /opt/hermes/hermes-agent
-/opt/hermes/hermes-agent/.venv/bin/uv pip install --python /opt/hermes/hermes-agent/.venv/bin/python -e '.[web,messaging,cron,voice,mcp,honcho,slack,matrix]'
+hermes pm install --extra slack --extra matrix   # pm records extras; `hermes update` keeps them
 systemctl restart hermes-gateway
 ```
