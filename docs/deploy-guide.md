@@ -23,7 +23,7 @@ Flow (~6-8 min on 1 vCPU / 2 GB):
 4. DNS pre-check (30s wait, fallback to self-signed TLS)
 5. Install system packages: curl, jq, ufw, fail2ban, Caddy, ffmpeg, git, build tools
 6. Install `uv` + Python 3.11
-7. Install Caddy from cloudsmith
+7. Install Caddy from the official GitHub release .deb (cloudsmith repo now 402s)
 8. Configure UFW (allow 22 limit, 80, 443, 9997)
 9. Create `/opt/hermes/` + `/opt/hermes-mgmt/` + `/etc/hermes/config/`
 10. Upstream `scripts/install.sh --non-interactive` (clone + pm: Python 3.14, Node, deps, web build) → `hermes pm install --extra messaging --extra voice`
