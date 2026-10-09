@@ -21,6 +21,12 @@
 
 set -euo pipefail
 
+# bootstrap.sh runs us from a systemd oneshot (hermes-install.service), where
+# HOME is unset. Upstream's installer is `set -u` and derives HERMES_HOME /
+# its tool store from $HOME, so it dies on "HOME: unbound variable". We run
+# as root and every Hermes path assumes /root, so pin it.
+export HOME="${HOME:-/root}"
+
 # ---- Constants ------------------------------------------------------------
 readonly APP_NAME="hermes-vps"
 readonly APP_VERSION="0.1.0"
